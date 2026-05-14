@@ -5,7 +5,7 @@ Create Date: 2024-01-01
 """
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ENUM, UUID
 
 revision = "001"
 down_revision = None
@@ -14,6 +14,25 @@ depends_on = None
 
 
 def upgrade() -> None:
+    room_type = ENUM("direct", "group", name="room_type", create_type=False)
+    membership_role = ENUM("owner", "member", name="membership_role", create_type=False)
+    transport_type = ENUM("webrtc", "websocket", "stored", name="transport_type", create_type=False)
+    delivery_status = ENUM(
+        "sending",
+        "sent",
+        "delivered",
+        "read",
+        "failed",
+        name="delivery_status",
+        create_type=False,
+    )
+
+    bind = op.get_bind()
+    room_type.create(bind, checkfirst=True)
+    membership_role.create(bind, checkfirst=True)
+    transport_type.create(bind, checkfirst=True)
+    delivery_status.create(bind, checkfirst=True)
+
     # Users
     op.create_table(
         "users",
@@ -78,23 +97,21 @@ def upgrade() -> None:
     op.create_index("ix_one_time_prekeys_is_used", "one_time_prekeys", ["is_used"])
 
     # Rooms
-    op.execute("CREATE TYPE room_type AS ENUM ('direct', 'group')")
     op.create_table(
         "rooms",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("type", sa.Enum("direct", "group", name="room_type"), nullable=False, default="direct"),
+        sa.Column("type", room_type, nullable=False, default="direct"),
         sa.Column("created_by", UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 
     # Memberships
-    op.execute("CREATE TYPE membership_role AS ENUM ('owner', 'member')")
     op.create_table(
         "memberships",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
         sa.Column("room_id", UUID(as_uuid=True), sa.ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False),
         sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("role", sa.Enum("owner", "member", name="membership_role"), nullable=False, default="member"),
+        sa.Column("role", membership_role, nullable=False, default="member"),
         sa.Column("joined_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.UniqueConstraint("room_id", "user_id", name="uq_membership"),
     )
@@ -102,8 +119,6 @@ def upgrade() -> None:
     op.create_index("ix_memberships_user_id", "memberships", ["user_id"])
 
     # Messages
-    op.execute("CREATE TYPE transport_type AS ENUM ('webrtc', 'websocket', 'stored')")
-    op.execute("CREATE TYPE delivery_status AS ENUM ('sending', 'sent', 'delivered', 'read', 'failed')")
     op.create_table(
         "messages",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
@@ -114,8 +129,8 @@ def upgrade() -> None:
         sa.Column("encrypted_header", sa.Text, nullable=True),
         sa.Column("nonce", sa.Text, nullable=False),
         sa.Column("algorithm", sa.Text, nullable=False, default="AES-256-GCM"),
-        sa.Column("transport", sa.Enum("webrtc", "websocket", "stored", name="transport_type"), nullable=False, default="stored"),
-        sa.Column("delivery_status", sa.Enum("sending", "sent", "delivered", "read", "failed", name="delivery_status"), nullable=False, default="sent"),
+        sa.Column("transport", transport_type, nullable=False, default="stored"),
+        sa.Column("delivery_status", delivery_status, nullable=False, default="sent"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("read_at", sa.DateTime(timezone=True), nullable=True),

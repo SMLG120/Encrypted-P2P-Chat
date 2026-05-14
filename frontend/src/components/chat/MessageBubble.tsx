@@ -1,17 +1,47 @@
-import { Check, CheckCheck, Clock, AlertCircle, Lock } from "lucide-react";
+import type { ReactNode } from "react";
+import {
+  AlertCircle,
+  Check,
+  CheckCheck,
+  Clock,
+  Forward,
+  Lock,
+  MoreHorizontal,
+  Pencil,
+  RotateCcw,
+  Trash2,
+} from "lucide-react";
 import { clsx } from "clsx";
 import { formatMessageTime } from "@/lib/date";
+import { AttachmentPreview } from "@/components/chat/AttachmentPreview";
+import { decodeMessageEnvelope } from "@/lib/messageEnvelope";
 import type { Message } from "@/types/chat";
 
 interface MessageBubbleProps {
   message: Message;
   isMine: boolean;
   senderName?: string;
+  onEdit?: (message: Message) => void;
+  onDelete?: (message: Message) => void;
+  onForward?: (message: Message) => void;
+  onResend?: (message: Message) => void;
 }
 
-export function MessageBubble({ message, isMine, senderName }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  isMine,
+  senderName,
+  onEdit,
+  onDelete,
+  onForward,
+  onResend,
+}: MessageBubbleProps) {
   const isDecrypted = message.decryptedText !== undefined;
   const failed = message.decryptionFailed;
+  const envelope = decodeMessageEnvelope(message.decryptedText);
+  const canEdit = isMine && isDecrypted && !message.is_deleted && message.delivery_status !== "failed";
+  const canDelete = isMine && !message.is_deleted && message.delivery_status !== "failed";
+  const canForward = isDecrypted && !message.is_deleted && message.delivery_status !== "failed";
 
   return (
     <div className={clsx("flex flex-col gap-1 max-w-[72%]", isMine && "items-end self-end", !isMine && "items-start self-start")}>
@@ -20,7 +50,7 @@ export function MessageBubble({ message, isMine, senderName }: MessageBubbleProp
       )}
       <div
         className={clsx(
-          "relative px-4 py-2.5 rounded-2xl",
+          "group relative px-4 py-2.5 rounded-2xl",
           isMine
             ? "bg-cyan/10 border border-cyan/20 text-text-primary rounded-br-sm"
             : "bg-panel border border-border text-text-primary rounded-bl-sm",
@@ -43,10 +73,25 @@ export function MessageBubble({ message, isMine, senderName }: MessageBubbleProp
         </div>
 
         {/* Content */}
-        {isDecrypted ? (
-          <p className="text-sm leading-relaxed break-words whitespace-pre-wrap">
-            {message.decryptedText}
-          </p>
+        {message.is_deleted ? (
+          <p className="text-sm italic text-text-muted">Message deleted</p>
+        ) : isDecrypted ? (
+          <>
+            {envelope.forwarded && (
+              <div className="mb-1 flex items-center gap-1 text-xs text-text-muted">
+                <Forward size={11} />
+                <span>Forwarded</span>
+              </div>
+            )}
+            {envelope.text && (
+              <p className="text-sm leading-relaxed break-words whitespace-pre-wrap">
+                {envelope.text}
+              </p>
+            )}
+            {envelope.attachments.map((attachment) => (
+              <AttachmentPreview key={attachment.id} attachment={attachment} />
+            ))}
+          </>
         ) : failed ? (
           <div className="flex items-center gap-2 text-sm text-rose">
             <AlertCircle size={14} />
@@ -60,16 +105,69 @@ export function MessageBubble({ message, isMine, senderName }: MessageBubbleProp
             <Clock size={12} className="text-text-muted animate-spin" />
           </div>
         )}
+
+        <div
+          className={clsx(
+            "absolute top-1 hidden items-center gap-1 rounded-md border border-border bg-surface/95 p-1 shadow-panel group-hover:flex",
+            isMine ? "right-full mr-2" : "left-full ml-2"
+          )}
+        >
+          {canEdit && (
+            <IconButton title="Edit" onClick={() => onEdit?.(message)}>
+              <Pencil size={13} />
+            </IconButton>
+          )}
+          {canDelete && (
+            <IconButton title="Delete" onClick={() => onDelete?.(message)}>
+              <Trash2 size={13} />
+            </IconButton>
+          )}
+          {canForward && (
+            <IconButton title="Forward" onClick={() => onForward?.(message)}>
+              <Forward size={13} />
+            </IconButton>
+          )}
+          {isMine && message.delivery_status === "failed" && (
+            <IconButton title="Resend" onClick={() => onResend?.(message)}>
+              <RotateCcw size={13} />
+            </IconButton>
+          )}
+          {!canEdit && !canDelete && !canForward && message.delivery_status !== "failed" && (
+            <MoreHorizontal size={13} className="text-text-muted" />
+          )}
+        </div>
       </div>
 
       {/* Status row */}
       <div className={clsx("flex items-center gap-1.5 px-1", isMine && "flex-row-reverse")}>
         <span className="text-xs text-text-muted font-mono">
           {formatMessageTime(message.created_at)}
+          {message.edited_at && !message.is_deleted ? " · edited" : ""}
         </span>
         {isMine && <DeliveryIcon status={message.delivery_status} />}
       </div>
     </div>
+  );
+}
+
+function IconButton({
+  title,
+  onClick,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-border hover:text-cyan"
+    >
+      {children}
+    </button>
   );
 }
 

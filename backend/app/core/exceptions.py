@@ -73,6 +73,10 @@ class MessageNotFoundError(NotFoundError):
     detail = "Message not found"
 
 
+class AttachmentNotFoundError(NotFoundError):
+    detail = "Attachment not found"
+
+
 # ── Conflict ──────────────────────────────────────────────────────────────────
 
 

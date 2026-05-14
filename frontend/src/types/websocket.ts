@@ -2,6 +2,10 @@
 
 export type WSMessageType =
   | "encrypted_message"
+  | "message_edited"
+  | "message_deleted"
+  | "message_forwarded"
+  | "attachment_uploaded"
   | "typing_start"
   | "typing_stop"
   | "presence_update"
@@ -19,15 +23,25 @@ export interface WSBase {
 }
 
 export interface WSEncryptedMessage extends WSBase {
-  type: "encrypted_message";
+  type: "encrypted_message" | "message_edited" | "message_deleted" | "message_forwarded";
   room_id: string;
   message_id: string;
+  client_message_id?: string;
   sender_id: string;
+  recipient_id?: string | null;
   ciphertext: string;
-  encrypted_header?: string;
+  encrypted_header?: string | null;
   nonce: string;
   algorithm: string;
   created_at: string;
+  edited_at?: string | null;
+  deleted_at?: string | null;
+  delivered_at?: string | null;
+  read_at?: string | null;
+  delivery_status: "sending" | "sent" | "delivered" | "read" | "failed";
+  forwarded_from_message_id?: string | null;
+  is_deleted?: boolean;
+  attachments?: unknown[];
 }
 
 export interface WSTyping extends WSBase {
@@ -43,10 +57,13 @@ export interface WSPresenceUpdate extends WSBase {
 }
 
 export interface WSReadReceipt extends WSBase {
-  type: "read_receipt";
+  type: "read_receipt" | "delivery_receipt";
   room_id: string;
   message_id: string;
-  reader_id: string;
+  reader_id?: string;
+  recipient_id?: string;
+  status?: "delivered" | "read";
+  client_message_id?: string;
 }
 
 export interface WSWebRTCOffer extends WSBase {
@@ -77,6 +94,13 @@ export interface WSError extends WSBase {
   type: "error";
   code: string;
   detail: string;
+  client_message_id?: string;
+}
+
+export interface WSAttachmentUploaded extends WSBase {
+  type: "attachment_uploaded";
+  id: string;
+  room_id: string;
 }
 
 export type WSMessage =
@@ -84,6 +108,7 @@ export type WSMessage =
   | WSTyping
   | WSPresenceUpdate
   | WSReadReceipt
+  | WSAttachmentUploaded
   | WSWebRTCOffer
   | WSWebRTCAnswer
   | WSWebRTCIce

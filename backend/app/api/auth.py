@@ -11,12 +11,13 @@ Flow:
     POST /auth/login/verify      → verifies assertion, sets cookie
 """
 
+import uuid
+
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.core.config import settings
 from app.core.dependencies import CurrentUser, DbDep, RedisDep, create_session_cookie
-from app.core.exceptions import AppError
-from app.core.logging import audit_log
+from app.core.logging import audit_log, get_logger
 from app.core.rate_limit import limiter
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import (
@@ -30,10 +31,33 @@ from app.schemas.auth import (
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+log = get_logger(__name__)
 
 
 def _get_auth_service(db: DbDep, redis: RedisDep) -> AuthService:
     return AuthService(UserRepository(db), redis)
+
+
+def _set_session_cookie(response: Response, user_id: uuid.UUID, flow: str) -> None:
+    session_value = create_session_cookie(user_id)
+    response.set_cookie(
+        key=settings.SESSION_COOKIE_NAME,
+        value=session_value,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAMESITE,
+        max_age=settings.SESSION_MAX_AGE,
+    )
+    log.info(
+        "session_cookie_set",
+        flow=flow,
+        user_id=str(user_id),
+        cookie_name=settings.SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAMESITE,
+        max_age=settings.SESSION_MAX_AGE,
+    )
 
 
 @router.post("/register/options")
@@ -60,15 +84,7 @@ async def registration_verify(
         credential_raw=body.credential,
     )
 
-    session_value = create_session_cookie(user.id)
-    response.set_cookie(
-        key=settings.SESSION_COOKIE_NAME,
-        value=session_value,
-        httponly=True,
-        secure=settings.COOKIE_SECURE,
-        samesite=settings.COOKIE_SAMESITE,
-        max_age=settings.SESSION_MAX_AGE,
-    )
+    _set_session_cookie(response, user.id, "registration")
 
     return AuthResponse(user=UserResponse.model_validate(user))
 
@@ -96,15 +112,7 @@ async def login_verify(
         credential_raw=body.credential,
     )
 
-    session_value = create_session_cookie(user.id)
-    response.set_cookie(
-        key=settings.SESSION_COOKIE_NAME,
-        value=session_value,
-        httponly=True,
-        secure=settings.COOKIE_SECURE,
-        samesite=settings.COOKIE_SAMESITE,
-        max_age=settings.SESSION_MAX_AGE,
-    )
+    _set_session_cookie(response, user.id, "login")
 
     return AuthResponse(user=UserResponse.model_validate(user))
 

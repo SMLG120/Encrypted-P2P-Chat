@@ -7,7 +7,6 @@ and is the most maintained Python WebAuthn library.
 
 from __future__ import annotations
 
-import base64
 import json
 import uuid
 from typing import Any
@@ -15,9 +14,7 @@ from typing import Any
 import webauthn
 from webauthn.helpers import bytes_to_base64url, base64url_to_bytes
 from webauthn.helpers.structs import (
-    AuthenticationCredential,
     PublicKeyCredentialDescriptor,
-    RegistrationCredential,
     UserVerificationRequirement,
 )
 
@@ -74,9 +71,8 @@ class PasskeyManager:
         expected_challenge_b64: str,
     ) -> webauthn.helpers.structs.VerifiedRegistration:
         try:
-            credential = RegistrationCredential.parse_raw(json.dumps(credential_raw))
             verification = webauthn.verify_registration_response(
-                credential=credential,
+                credential=credential_raw,
                 expected_challenge=base64url_to_bytes(expected_challenge_b64),
                 expected_rp_id=self.rp_id,
                 expected_origin=self.origin,
@@ -110,9 +106,8 @@ class PasskeyManager:
         stored_sign_count: int,
     ) -> webauthn.helpers.structs.VerifiedAuthentication:
         try:
-            credential = AuthenticationCredential.parse_raw(json.dumps(credential_raw))
             verification = webauthn.verify_authentication_response(
-                credential=credential,
+                credential=credential_raw,
                 expected_challenge=base64url_to_bytes(expected_challenge_b64),
                 expected_rp_id=self.rp_id,
                 expected_origin=self.origin,

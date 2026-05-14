@@ -56,10 +56,12 @@ class WebSocketService {
     this.ws = null;
   }
 
-  send(msg: object): void {
+  send(msg: object): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+      return true;
     }
+    return false;
   }
 
   onMessage(handler: Handler): () => void {

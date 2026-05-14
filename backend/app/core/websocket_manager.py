@@ -83,14 +83,16 @@ class ConnectionManager:
 
     async def broadcast_to_users(
         self, user_ids: list[uuid.UUID], message: dict, exclude: uuid.UUID | None = None
-    ) -> None:
+    ) -> int:
         tasks = [
             self.send_to_user(uid, message)
             for uid in user_ids
             if exclude is None or uid != exclude
         ]
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            return sum(result for result in results if isinstance(result, int))
+        return 0
 
     def get_online_user_ids(self) -> set[str]:
         return {uid for uid, conns in self._connections.items() if conns}

@@ -9,7 +9,7 @@ import secrets
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, PostgresDsn, RedisDsn, field_validator
+from pydantic import PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     # ── WebAuthn ──────────────────────────────────────────────────────────
     WEBAUTHN_RP_ID: str = "localhost"
     WEBAUTHN_RP_NAME: str = "Encrypted P2P Chat"
-    WEBAUTHN_ORIGIN: str = "http://localhost"
+    # Default to the Vite dev origin. Docker/production override this via env.
+    WEBAUTHN_ORIGIN: str = "http://localhost:5173"
     WEBAUTHN_CHALLENGE_TTL: int = 300  # seconds
 
     # ── Database ──────────────────────────────────────────────────────────
@@ -54,7 +55,7 @@ class Settings(BaseSettings):
     REDIS_RATE_LIMIT_DB: int = 2
 
     # ── CORS ──────────────────────────────────────────────────────────────
-    ALLOWED_ORIGINS: list[str] = ["http://localhost", "http://localhost:5173"]
+    ALLOWED_ORIGINS: list[str] | str = ["http://localhost", "http://localhost:5173"]
 
     # ── Rate Limiting ─────────────────────────────────────────────────────
     RATE_LIMIT_AUTH: str = "10/minute"
@@ -71,11 +72,28 @@ class Settings(BaseSettings):
     WS_HEARTBEAT_INTERVAL: int = 30
     WS_MAX_CONNECTIONS_PER_USER: int = 5
 
+    # ── Attachments ───────────────────────────────────────────────────────
+    ATTACHMENT_STORAGE_DIR: str = "uploads/attachments"
+    ATTACHMENT_MAX_BYTES: int = 10 * 1024 * 1024
+    ATTACHMENT_ALLOWED_MIME_TYPES: list[str] | str = [
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    ]
+
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def parse_origins(cls, v: str | list) -> list[str]:
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
+
+    @field_validator("ATTACHMENT_ALLOWED_MIME_TYPES", mode="before")
+    @classmethod
+    def parse_attachment_mime_types(cls, v: str | list) -> list[str]:
+        if isinstance(v, str):
+            return [mime.strip() for mime in v.split(",") if mime.strip()]
         return v
 
     @field_validator("DEBUG", mode="before")

@@ -30,12 +30,30 @@ export interface Message {
   algorithm: string;
   transport: "webrtc" | "websocket" | "stored";
   delivery_status: "sending" | "sent" | "delivered" | "read" | "failed";
+  forwarded_from_message_id?: string | null;
+  is_deleted?: boolean;
   created_at: string;
+  edited_at?: string | null;
+  deleted_at?: string | null;
   delivered_at?: string;
   read_at?: string;
+  attachments?: Attachment[];
+  client_message_id?: string;
   // Client-side decrypted content (never sent to server)
   decryptedText?: string;
   decryptionFailed?: boolean;
+}
+
+export interface Attachment {
+  id: string;
+  room_id: string;
+  message_id?: string | null;
+  uploader_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  url: string;
+  created_at: string;
 }
 
 export interface PresenceState {

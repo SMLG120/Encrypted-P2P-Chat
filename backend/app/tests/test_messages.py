@@ -138,3 +138,140 @@ async def test_non_member_cannot_read_messages(client: AsyncClient, db_session: 
 
     resp2 = await client.get(f"/api/v1/rooms/{room_id}/messages", cookies=_cookies(eve))
     assert resp2.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_sender_can_edit_and_delete_own_message(client: AsyncClient, db_session: AsyncSession):
+    alice = await create_test_user(db_session, "alice_edit")
+    bob = await create_test_user(db_session, "bob_edit")
+
+    room_resp = await client.post(
+        "/api/v1/rooms",
+        json={"type": "direct", "member_ids": [str(bob.id)]},
+        cookies=_cookies(alice),
+    )
+    room_id = room_resp.json()["id"]
+    send_resp = await client.post(
+        f"/api/v1/rooms/{room_id}/messages",
+        json={"ciphertext": "Y2lwaGVydGV4dC1lZGl0LTEyMw", "nonce": "bm9uY2UtZWRpdA"},
+        cookies=_cookies(alice),
+    )
+    message_id = send_resp.json()["id"]
+
+    denied = await client.patch(
+        f"/api/v1/messages/{message_id}",
+        json={"ciphertext": "Ym9iLWNhbm5vdC1lZGl0LTEyMw", "nonce": "bm9uY2UtYm9i"},
+        cookies=_cookies(bob),
+    )
+    assert denied.status_code == 403
+
+    edited = await client.patch(
+        f"/api/v1/messages/{message_id}",
+        json={"ciphertext": "YWxpY2UtZWRpdGVkLWNpcGhlcg", "nonce": "bm9uY2UtYWxpY2U"},
+        cookies=_cookies(alice),
+    )
+    assert edited.status_code == 200
+    assert edited.json()["ciphertext"] == "YWxpY2UtZWRpdGVkLWNpcGhlcg"
+    assert edited.json()["edited_at"] is not None
+
+    denied_delete = await client.delete(f"/api/v1/messages/{message_id}", cookies=_cookies(bob))
+    assert denied_delete.status_code == 403
+
+    deleted = await client.delete(f"/api/v1/messages/{message_id}", cookies=_cookies(alice))
+    assert deleted.status_code == 200
+    assert deleted.json()["is_deleted"] is True
+    assert deleted.json()["ciphertext"] == "__deleted__"
+
+
+@pytest.mark.asyncio
+async def test_forward_message_to_another_room(client: AsyncClient, db_session: AsyncSession):
+    alice = await create_test_user(db_session, "alice_forward")
+    bob = await create_test_user(db_session, "bob_forward")
+    eve = await create_test_user(db_session, "eve_forward")
+
+    source_room = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+    target_room = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(eve.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+    source_msg = (
+        await client.post(
+            f"/api/v1/rooms/{source_room}/messages",
+            json={"ciphertext": "Zm9yd2FyZC1zb3VyY2UtY2lwaGVy", "nonce": "bm9uY2UtZnJvbQ"},
+            cookies=_cookies(alice),
+        )
+    ).json()
+
+    forwarded = await client.post(
+        f"/api/v1/messages/{source_msg['id']}/forward",
+        json={
+            "target_room_id": target_room,
+            "payload": {
+                "ciphertext": "Zm9yd2FyZGVkLXRhcmdldC1jaXBoZXI",
+                "nonce": "bm9uY2UtdGFyZ2V0",
+            },
+        },
+        cookies=_cookies(alice),
+    )
+
+    assert forwarded.status_code == 201
+    body = forwarded.json()
+    assert body["room_id"] == target_room
+    assert body["forwarded_from_message_id"] == source_msg["id"]
+
+
+@pytest.mark.asyncio
+async def test_upload_image_attachment_and_download_encrypted_blob(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_DIR", str(tmp_path))
+    alice = await create_test_user(db_session, "alice_upload")
+    bob = await create_test_user(db_session, "bob_upload")
+    room_id = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+    encrypted_blob = b"encrypted-image-bytes"
+
+    upload = await client.post(
+        f"/api/v1/rooms/{room_id}/attachments",
+        files={"file": ("image.gif.encrypted", encrypted_blob, "application/octet-stream")},
+        data={"filename": "image.gif", "mime_type": "image/gif", "size_bytes": str(len(encrypted_blob))},
+        cookies=_cookies(alice),
+    )
+
+    assert upload.status_code == 201
+    attachment = upload.json()
+    assert attachment["mime_type"] == "image/gif"
+    assert attachment["url"].startswith("/api/v1/attachments/")
+
+    send = await client.post(
+        f"/api/v1/rooms/{room_id}/messages",
+        json={
+            "ciphertext": "bWVzc2FnZS13aXRoLWF0dGFjaG1lbnQ",
+            "nonce": "bm9uY2UtYXR0",
+            "attachment_ids": [attachment["id"]],
+        },
+        cookies=_cookies(alice),
+    )
+    assert send.status_code == 201
+    assert send.json()["attachments"][0]["id"] == attachment["id"]
+
+    downloaded = await client.get(attachment["url"], cookies=_cookies(bob))
+    assert downloaded.status_code == 200
+    assert downloaded.content == encrypted_blob

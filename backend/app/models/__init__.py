@@ -2,6 +2,7 @@
 
 from app.models.base import Base
 from app.models.credential import WebAuthnCredential
+from app.models.attachment import MessageAttachment
 from app.models.identity_key import IdentityKey
 from app.models.membership import Membership
 from app.models.message import Message
@@ -14,6 +15,7 @@ __all__ = [
     "Base",
     "User",
     "WebAuthnCredential",
+    "MessageAttachment",
     "IdentityKey",
     "SignedPrekey",
     "OneTimePrekey",

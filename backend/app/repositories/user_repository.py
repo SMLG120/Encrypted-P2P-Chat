@@ -15,8 +15,13 @@ class UserRepository:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    async def create(self, username: str, display_name: str) -> User:
-        user = User(username=username, display_name=display_name)
+    async def create(
+        self,
+        username: str,
+        display_name: str,
+        user_id: uuid.UUID | None = None,
+    ) -> User:
+        user = User(id=user_id, username=username, display_name=display_name)
         self._db.add(user)
         await self._db.flush()
         return user

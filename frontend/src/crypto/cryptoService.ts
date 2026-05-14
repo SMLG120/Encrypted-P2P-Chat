@@ -188,13 +188,41 @@ export async function encryptMessage(
 
 export async function decryptMessage(
   roomId: string,
-  msg: { ciphertext: string; nonce: string; encryptedHeader?: string }
+  msg: { ciphertext: string; nonce: string; encryptedHeader?: string; encrypted_header?: string | null }
 ): Promise<string> {
   const stateJson = await getSession(roomId);
-  if (!stateJson) throw new Error(`No session for room ${roomId}`);
+  const encodedHeader = msg.encryptedHeader ?? msg.encrypted_header ?? undefined;
+  if (!encodedHeader) throw new Error("Missing message header");
+  const decodedHeader = JSON.parse(atob(encodedHeader)) as
+    | RatchetMessage["header"]
+    | {
+        kind: "x3dh_initial";
+        ephemeralPublicKey: string;
+        identityPublicKey: string;
+        usedSPKId: number;
+        usedOPKId?: number;
+        header: RatchetMessage["header"];
+      };
 
-  if (!msg.encryptedHeader) throw new Error("Missing message header");
-  const header = JSON.parse(atob(msg.encryptedHeader)) as RatchetMessage["header"];
+  if (!stateJson) {
+    if ("kind" in decodedHeader && decodedHeader.kind === "x3dh_initial") {
+      return receiveSession(roomId, {
+        ephemeralPublicKey: decodedHeader.ephemeralPublicKey,
+        identityPublicKey: decodedHeader.identityPublicKey,
+        usedSPKId: decodedHeader.usedSPKId,
+        usedOPKId: decodedHeader.usedOPKId,
+        firstMessage: {
+          header: decodedHeader.header,
+          ciphertext: msg.ciphertext,
+          nonce: msg.nonce,
+        },
+      });
+    }
+    throw new Error(`No session for room ${roomId}`);
+  }
+
+  if ("kind" in decodedHeader) throw new Error("Unexpected initial session header");
+  const header = decodedHeader;
 
   const state = deserializeRatchetState(stateJson);
   const { plaintext, newState } = await ratchetDecrypt(state, {
@@ -205,6 +233,27 @@ export async function decryptMessage(
 
   await storeSession(roomId, serializeRatchetState(newState));
   return plaintext;
+}
+
+export async function encryptInitialDirectMessage(
+  roomId: string,
+  plaintext: string,
+  remoteBundle: KeyBundle
+): Promise<EncryptedMessage> {
+  const { encryptedPayload } = await initiateSession(roomId, plaintext, remoteBundle);
+  return {
+    ciphertext: encryptedPayload.firstMessage.ciphertext,
+    nonce: encryptedPayload.firstMessage.nonce,
+    algorithm: "AES-256-GCM",
+    encryptedHeader: btoa(JSON.stringify({
+      kind: "x3dh_initial",
+      ephemeralPublicKey: encryptedPayload.ephemeralPublicKey,
+      identityPublicKey: encryptedPayload.identityPublicKey,
+      usedSPKId: encryptedPayload.usedSPKId,
+      usedOPKId: encryptedPayload.usedOPKId,
+      header: encryptedPayload.firstMessage.header,
+    })),
+  };
 }
 
 // ── Serialization ─────────────────────────────────────────────────────────────

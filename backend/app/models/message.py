@@ -12,13 +12,14 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 
 if TYPE_CHECKING:
+    from app.models.attachment import MessageAttachment
     from app.models.room import Room
     from app.models.user import User
 
@@ -62,14 +63,25 @@ class Message(Base):
         default="sent",
     )
 
+    forwarded_from_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
+    )
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     # ── Timestamps ────────────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     room: Mapped["Room"] = relationship("Room", back_populates="messages")
     sender: Mapped["User"] = relationship(
         "User", back_populates="sent_messages", foreign_keys=[sender_id]
+    )
+    forwarded_from: Mapped["Message | None"] = relationship("Message", remote_side=[id])
+    attachments: Mapped[list["MessageAttachment"]] = relationship(
+        "MessageAttachment", back_populates="message", lazy="selectin"
     )
