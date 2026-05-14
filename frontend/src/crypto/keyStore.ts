@@ -13,7 +13,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 
 const DB_NAME = "crypt_keys_v1";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 interface KeyStoreSchema extends DBSchema {
   identity: {
@@ -50,6 +50,16 @@ interface KeyStoreSchema extends DBSchema {
       updatedAt: number;
     };
   };
+  message_keys: {
+    key: string;
+    value: {
+      id: string;
+      roomId: string;
+      messageId: string;
+      key: Uint8Array;
+      updatedAt: number;
+    };
+  };
 }
 
 let _db: IDBPDatabase<KeyStoreSchema> | null = null;
@@ -58,10 +68,21 @@ async function getDB(): Promise<IDBPDatabase<KeyStoreSchema>> {
   if (_db) return _db;
   _db = await openDB<KeyStoreSchema>(DB_NAME, DB_VERSION, {
     upgrade(db) {
-      db.createObjectStore("identity");
-      db.createObjectStore("signed_prekeys", { keyPath: "keyId" });
-      db.createObjectStore("one_time_prekeys", { keyPath: "keyId" });
-      db.createObjectStore("sessions", { keyPath: "roomId" });
+      if (!db.objectStoreNames.contains("identity")) {
+        db.createObjectStore("identity");
+      }
+      if (!db.objectStoreNames.contains("signed_prekeys")) {
+        db.createObjectStore("signed_prekeys", { keyPath: "keyId" });
+      }
+      if (!db.objectStoreNames.contains("one_time_prekeys")) {
+        db.createObjectStore("one_time_prekeys", { keyPath: "keyId" });
+      }
+      if (!db.objectStoreNames.contains("sessions")) {
+        db.createObjectStore("sessions", { keyPath: "roomId" });
+      }
+      if (!db.objectStoreNames.contains("message_keys")) {
+        db.createObjectStore("message_keys", { keyPath: "id" });
+      }
     },
   });
   return _db;
@@ -162,16 +183,62 @@ export async function deleteSession(roomId: string): Promise<void> {
   await db.delete("sessions", roomId);
 }
 
+// ── Per-message keys ─────────────────────────────────────────────────────────
+
+function messageKeyId(roomId: string, messageId: string): string {
+  return `${roomId}:${messageId}`;
+}
+
+export async function storeMessageKey(
+  roomId: string,
+  messageId: string | undefined,
+  key: Uint8Array,
+): Promise<void> {
+  if (!messageId) return;
+  const db = await getDB();
+  await db.put("message_keys", {
+    id: messageKeyId(roomId, messageId),
+    roomId,
+    messageId,
+    key,
+    updatedAt: Date.now(),
+  });
+}
+
+export async function getMessageKey(
+  roomId: string,
+  messageId: string | undefined,
+): Promise<Uint8Array | null> {
+  if (!messageId) return null;
+  const db = await getDB();
+  const row = await db.get("message_keys", messageKeyId(roomId, messageId));
+  return row?.key ?? null;
+}
+
+export async function copyMessageKey(
+  roomId: string,
+  fromMessageId: string | undefined,
+  toMessageId: string | undefined,
+): Promise<void> {
+  if (!fromMessageId || !toMessageId || fromMessageId === toMessageId) return;
+  const key = await getMessageKey(roomId, fromMessageId);
+  if (key) await storeMessageKey(roomId, toMessageId, key);
+}
+
 // ── Clear all (logout) ────────────────────────────────────────────────────────
 
 export async function clearAllKeys(): Promise<void> {
   const db = await getDB();
-  const tx = db.transaction(["identity", "signed_prekeys", "one_time_prekeys", "sessions"], "readwrite");
+  const tx = db.transaction(
+    ["identity", "signed_prekeys", "one_time_prekeys", "sessions", "message_keys"],
+    "readwrite",
+  );
   await Promise.all([
     tx.objectStore("identity").clear(),
     tx.objectStore("signed_prekeys").clear(),
     tx.objectStore("one_time_prekeys").clear(),
     tx.objectStore("sessions").clear(),
+    tx.objectStore("message_keys").clear(),
   ]);
   await tx.done;
 }

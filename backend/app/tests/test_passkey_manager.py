@@ -90,3 +90,32 @@ def test_verify_authentication_passes_browser_credential_dict_to_webauthn(monkey
         )
         is verified
     )
+
+
+def test_verify_authentication_accepts_multiple_expected_origins(monkeypatch):
+    manager = PasskeyManager()
+    manager.rp_id = "localhost"
+    manager.origin = ["http://localhost", "http://localhost:5173"]
+
+    challenge = bytes_to_base64url(b"challenge")
+    verified = _VerifiedAuthentication()
+
+    def fake_verify_authentication_response(**kwargs):
+        assert kwargs["expected_origin"] == ["http://localhost", "http://localhost:5173"]
+        return verified
+
+    monkeypatch.setattr(
+        passkey_manager_module.webauthn,
+        "verify_authentication_response",
+        fake_verify_authentication_response,
+    )
+
+    assert (
+        manager.verify_authentication(
+            credential_raw={"id": "credential-id", "response": {}},
+            expected_challenge_b64=challenge,
+            stored_public_key=b"public-key",
+            stored_sign_count=3,
+        )
+        is verified
+    )

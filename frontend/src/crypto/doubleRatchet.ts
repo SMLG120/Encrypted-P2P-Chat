@@ -99,7 +99,7 @@ export async function ratchetInitBob(
 export async function ratchetEncrypt(
   state: RatchetState,
   plaintext: string
-): Promise<{ message: RatchetMessage; newState: RatchetState }> {
+): Promise<{ message: RatchetMessage; newState: RatchetState; messageKey: Uint8Array }> {
   if (!state.CKs || !state.DHs) {
     throw new Error("Ratchet not initialized for sending");
   }
@@ -124,6 +124,7 @@ export async function ratchetEncrypt(
   return {
     message: { header, ciphertext, nonce },
     newState,
+    messageKey: mk,
   };
 }
 
@@ -131,7 +132,7 @@ export async function ratchetEncrypt(
 export async function ratchetDecrypt(
   state: RatchetState,
   message: RatchetMessage
-): Promise<{ plaintext: string; newState: RatchetState }> {
+): Promise<{ plaintext: string; newState: RatchetState; messageKey: Uint8Array }> {
   const header = message.header;
   let newState = { ...state, MKSKIPPED: new Map(state.MKSKIPPED) };
 
@@ -142,7 +143,7 @@ export async function ratchetDecrypt(
     newState.MKSKIPPED.delete(skippedKey);
     const msgKey = await rawToAESKey(skippedMK);
     const plaintext = await aesDecrypt(msgKey, message.ciphertext, message.nonce);
-    return { plaintext, newState };
+    return { plaintext, newState, messageKey: skippedMK };
   }
 
   const remoteDH = b64urlToBytes(header.dh);
@@ -168,7 +169,7 @@ export async function ratchetDecrypt(
   const msgKey = await rawToAESKey(mk);
   const plaintext = await aesDecrypt(msgKey, message.ciphertext, message.nonce);
 
-  return { plaintext, newState };
+  return { plaintext, newState, messageKey: mk };
 }
 
 async function skipMessageKeys(

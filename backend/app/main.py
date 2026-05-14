@@ -16,6 +16,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from redis.exceptions import RedisError
+from sqlalchemy.exc import SQLAlchemyError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -83,6 +85,30 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail},
+        )
+
+    @app.exception_handler(SQLAlchemyError)
+    async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
+        log.error(
+            "database_unavailable",
+            path=request.url.path,
+            error_type=exc.__class__.__name__,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database unavailable. Please try again shortly."},
+        )
+
+    @app.exception_handler(RedisError)
+    async def redis_error_handler(request: Request, exc: RedisError):
+        log.error(
+            "redis_unavailable",
+            path=request.url.path,
+            error_type=exc.__class__.__name__,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Session store unavailable. Please try again shortly."},
         )
 
     # ── Routers ────────────────────────────────────────────────────────────

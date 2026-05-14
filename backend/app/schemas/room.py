@@ -30,7 +30,10 @@ class RoomResponse(BaseModel):
     type: str
     created_by: uuid.UUID | None
     created_at: datetime
-    members: list[MembershipResponse] = []
+    members: list[MembershipResponse] = Field(
+        default_factory=list,
+        validation_alias="memberships",
+    )
 
     model_config = {"from_attributes": True}
 

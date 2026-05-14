@@ -23,6 +23,7 @@ import {
   type RatchetState,
   type RatchetMessage,
 } from "./doubleRatchet";
+import { aesDecrypt, rawToAESKey } from "./primitives";
 import {
   storeIdentityKey,
   getIdentityKey,
@@ -32,6 +33,9 @@ import {
   consumeOneTimePrekey,
   storeSession,
   getSession,
+  storeMessageKey,
+  getMessageKey,
+  copyMessageKey,
   clearAllKeys,
 } from "./keyStore";
 import { b64urlToBytes, bytesToB64url } from "@/lib/base64";
@@ -93,7 +97,8 @@ export interface InitialMessagePayload {
 export async function initiateSession(
   roomId: string,
   plaintext: string,
-  remoteBundle: KeyBundle
+  remoteBundle: KeyBundle,
+  messageId?: string,
 ): Promise<{ encryptedPayload: InitialMessagePayload; ratchetStateJson: string }> {
   const identity = await getIdentityKey();
   if (!identity) throw new Error("No local identity key — run setupIdentity first");
@@ -106,11 +111,12 @@ export async function initiateSession(
   const ratchetState = await ratchetInitAlice(x3dhResult.sharedSecret, remoteRatchetPub);
 
   // Encrypt first message
-  const { message: firstMessage, newState } = await ratchetEncrypt(ratchetState, plaintext);
+  const { message: firstMessage, newState, messageKey } = await ratchetEncrypt(ratchetState, plaintext);
 
   // Persist ratchet state
   const stateJson = serializeRatchetState(newState);
   await storeSession(roomId, stateJson);
+  await storeMessageKey(roomId, messageId, messageKey);
 
   return {
     encryptedPayload: {
@@ -130,6 +136,7 @@ export async function initiateSession(
 export async function receiveSession(
   roomId: string,
   payload: InitialMessagePayload,
+  messageId?: string,
 ): Promise<string> {
   const identity = await getIdentityKey();
   if (!identity) throw new Error("No local identity key");
@@ -158,9 +165,10 @@ export async function receiveSession(
   );
 
   // Decrypt the first message
-  const { plaintext, newState } = await ratchetDecrypt(ratchetState, payload.firstMessage);
+  const { plaintext, newState, messageKey } = await ratchetDecrypt(ratchetState, payload.firstMessage);
 
   await storeSession(roomId, serializeRatchetState(newState));
+  await storeMessageKey(roomId, messageId, messageKey);
   return plaintext;
 }
 
@@ -168,14 +176,16 @@ export async function receiveSession(
 
 export async function encryptMessage(
   roomId: string,
-  plaintext: string
+  plaintext: string,
+  messageId?: string,
 ): Promise<EncryptedMessage & { header: RatchetMessage["header"] }> {
   const stateJson = await getSession(roomId);
   if (!stateJson) throw new Error(`No session for room ${roomId}`);
 
   const state = deserializeRatchetState(stateJson);
-  const { message, newState } = await ratchetEncrypt(state, plaintext);
+  const { message, newState, messageKey } = await ratchetEncrypt(state, plaintext);
   await storeSession(roomId, serializeRatchetState(newState));
+  await storeMessageKey(roomId, messageId, messageKey);
 
   return {
     ciphertext: message.ciphertext,
@@ -188,7 +198,13 @@ export async function encryptMessage(
 
 export async function decryptMessage(
   roomId: string,
-  msg: { ciphertext: string; nonce: string; encryptedHeader?: string; encrypted_header?: string | null }
+  msg: {
+    id?: string;
+    ciphertext: string;
+    nonce: string;
+    encryptedHeader?: string;
+    encrypted_header?: string | null;
+  }
 ): Promise<string> {
   const stateJson = await getSession(roomId);
   const encodedHeader = msg.encryptedHeader ?? msg.encrypted_header ?? undefined;
@@ -216,31 +232,43 @@ export async function decryptMessage(
           ciphertext: msg.ciphertext,
           nonce: msg.nonce,
         },
-      });
+      }, msg.id);
     }
     throw new Error(`No session for room ${roomId}`);
   }
 
-  if ("kind" in decodedHeader) throw new Error("Unexpected initial session header");
+  if ("kind" in decodedHeader) {
+    const cached = await decryptWithCachedMessageKey(roomId, msg);
+    if (cached !== null) return cached;
+    throw new Error("Unable to decrypt historical initial message on this device");
+  }
   const header = decodedHeader;
 
   const state = deserializeRatchetState(stateJson);
-  const { plaintext, newState } = await ratchetDecrypt(state, {
-    header,
-    ciphertext: msg.ciphertext,
-    nonce: msg.nonce,
-  });
+  try {
+    const { plaintext, newState, messageKey } = await ratchetDecrypt(state, {
+      header,
+      ciphertext: msg.ciphertext,
+      nonce: msg.nonce,
+    });
 
-  await storeSession(roomId, serializeRatchetState(newState));
-  return plaintext;
+    await storeSession(roomId, serializeRatchetState(newState));
+    await storeMessageKey(roomId, msg.id, messageKey);
+    return plaintext;
+  } catch (error) {
+    const cached = await decryptWithCachedMessageKey(roomId, msg);
+    if (cached !== null) return cached;
+    throw error;
+  }
 }
 
 export async function encryptInitialDirectMessage(
   roomId: string,
   plaintext: string,
-  remoteBundle: KeyBundle
+  remoteBundle: KeyBundle,
+  messageId?: string,
 ): Promise<EncryptedMessage> {
-  const { encryptedPayload } = await initiateSession(roomId, plaintext, remoteBundle);
+  const { encryptedPayload } = await initiateSession(roomId, plaintext, remoteBundle, messageId);
   return {
     ciphertext: encryptedPayload.firstMessage.ciphertext,
     nonce: encryptedPayload.firstMessage.nonce,
@@ -254,6 +282,24 @@ export async function encryptInitialDirectMessage(
       header: encryptedPayload.firstMessage.header,
     })),
   };
+}
+
+export async function rememberMessageKeyAlias(
+  roomId: string,
+  fromMessageId: string | undefined,
+  toMessageId: string | undefined,
+): Promise<void> {
+  await copyMessageKey(roomId, fromMessageId, toMessageId);
+}
+
+async function decryptWithCachedMessageKey(
+  roomId: string,
+  msg: { id?: string; ciphertext: string; nonce: string },
+): Promise<string | null> {
+  const cachedKey = await getMessageKey(roomId, msg.id);
+  if (!cachedKey) return null;
+  const key = await rawToAESKey(cachedKey);
+  return aesDecrypt(key, msg.ciphertext, msg.nonce);
 }
 
 // ── Serialization ─────────────────────────────────────────────────────────────

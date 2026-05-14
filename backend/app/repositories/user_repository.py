@@ -79,6 +79,28 @@ class UserRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_credential_record_by_id(
+        self, credential_record_id: uuid.UUID
+    ) -> WebAuthnCredential | None:
+        result = await self._db.execute(
+            select(WebAuthnCredential).where(WebAuthnCredential.id == credential_record_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def count_credentials_for_user(self, user_id: uuid.UUID) -> int:
+        from sqlalchemy import func
+
+        result = await self._db.execute(
+            select(func.count()).select_from(WebAuthnCredential).where(
+                WebAuthnCredential.user_id == user_id
+            )
+        )
+        return result.scalar_one()
+
+    async def delete_credential(self, credential: WebAuthnCredential) -> None:
+        await self._db.delete(credential)
+        await self._db.flush()
+
     async def update_sign_count(
         self, credential: WebAuthnCredential, new_count: int
     ) -> WebAuthnCredential:

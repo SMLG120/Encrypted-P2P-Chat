@@ -37,11 +37,12 @@ log = get_logger(__name__)
 router = APIRouter(tags=["websocket"])
 
 _signer = URLSafeTimedSerializer(settings.SECRET_KEY, salt="session")
+_PLAINTEXT_FIELDS = frozenset({"content", "text", "plaintext", "decrypted", "decrypted_text"})
 
 
 async def _send_error(websocket: WebSocket, code: str, detail: str, **extra) -> None:
     await websocket.send_text(
-        json.dumps({"type": "error", "code": code, "detail": detail, **extra})
+        json.dumps({"type": "message_error", "code": code, "detail": detail, **extra})
     )
 
 
@@ -52,6 +53,10 @@ def _message_event(event_type: str, msg, client_message_id: str | None = None) -
     if client_message_id:
         payload["client_message_id"] = client_message_id
     return payload
+
+
+def _contains_plaintext_field(payload: dict) -> bool:
+    return any(field in payload for field in _PLAINTEXT_FIELDS)
 
 
 async def _authenticate_ws(
@@ -66,7 +71,11 @@ async def _authenticate_ws(
     except (SignatureExpired, BadSignature, KeyError, ValueError):
         return None
     repo = UserRepository(db)
-    return await repo.get_by_id(user_id)
+    try:
+        return await repo.get_by_id(user_id)
+    except Exception as exc:
+        log.error("ws_auth_lookup_failed", error_type=exc.__class__.__name__)
+        raise
 
 
 @router.websocket("/ws")
@@ -75,7 +84,11 @@ async def websocket_endpoint(
     session: str | None = Cookie(None, alias=settings.SESSION_COOKIE_NAME),
 ) -> None:
     async for db in get_db():
-        user = await _authenticate_ws(session, db)
+        try:
+            user = await _authenticate_ws(session, db)
+        except Exception:
+            await websocket.close(code=1011, reason="Authentication service unavailable")
+            return
         if not user:
             await websocket.close(code=4001, reason="Unauthenticated")
             return
@@ -86,6 +99,9 @@ async def websocket_endpoint(
         message_service = MessageService(MessageRepository(db), room_repo)
 
         await ws_manager.connect(user.id, websocket)
+        await websocket.send_text(
+            json.dumps({"type": "connected", "user_id": str(user.id)})
+        )
         await presence.set_online(user.id)
 
         # Broadcast presence to user's room members
@@ -127,6 +143,14 @@ async def websocket_endpoint(
                 elif msg_type == "encrypted_message":
                     client_message_id = msg.get("client_message_id")
                     try:
+                        if _contains_plaintext_field(msg):
+                            await _send_error(
+                                websocket,
+                                "plaintext_rejected",
+                                "Messages must be encrypted before sending",
+                                client_message_id=client_message_id,
+                            )
+                            continue
                         room_id = uuid.UUID(str(msg.get("room_id")))
                         body = MessageCreate(
                             client_message_id=client_message_id,

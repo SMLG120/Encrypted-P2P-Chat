@@ -124,6 +124,119 @@ async def test_list_messages_returns_ciphertext_only(client: AsyncClient, db_ses
 
 
 @pytest.mark.asyncio
+async def test_two_users_can_send_and_fetch_saved_direct_message_history(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    alice = await create_test_user(db_session, "alice_history")
+    bob = await create_test_user(db_session, "bob_history")
+
+    room = await client.post(
+        "/api/v1/rooms",
+        json={"type": "direct", "member_ids": [str(bob.id)]},
+        cookies=_cookies(alice),
+    )
+    assert room.status_code == 201
+    room_id = room.json()["id"]
+
+    alice_msg = {
+        "recipient_id": str(bob.id),
+        "ciphertext": "YWxpY2UtY2lwaGVydGV4dC1vbmx5",
+        "encrypted_header": "YWxpY2UtaGVhZGVy",
+        "nonce": "YWxpY2Utbm9uY2U",
+        "algorithm": "AES-256-GCM",
+    }
+    bob_msg = {
+        "recipient_id": str(alice.id),
+        "ciphertext": "Ym9iLWNpcGhlcnRleHQtb25seQ",
+        "encrypted_header": "Ym9iLWhlYWRlcg",
+        "nonce": "Ym9iLW5vbmNl",
+        "algorithm": "AES-256-GCM",
+    }
+
+    assert (
+        await client.post(
+            f"/api/v1/rooms/{room_id}/messages",
+            json=alice_msg,
+            cookies=_cookies(alice),
+        )
+    ).status_code == 201
+    assert (
+        await client.post(
+            f"/api/v1/rooms/{room_id}/messages",
+            json=bob_msg,
+            cookies=_cookies(bob),
+        )
+    ).status_code == 201
+
+    alice_history = await client.get(
+        f"/api/v1/rooms/{room_id}/messages",
+        cookies=_cookies(alice),
+    )
+    bob_history = await client.get(
+        f"/api/v1/rooms/{room_id}/messages",
+        cookies=_cookies(bob),
+    )
+
+    assert alice_history.status_code == 200
+    assert bob_history.status_code == 200
+    assert [m["ciphertext"] for m in alice_history.json()["messages"]] == [
+        alice_msg["ciphertext"],
+        bob_msg["ciphertext"],
+    ]
+    assert bob_history.json()["messages"] == alice_history.json()["messages"]
+
+    rows = (await db_session.execute(select(Message).where(Message.room_id == uuid.UUID(room_id)))).scalars().all()
+    assert {row.ciphertext for row in rows} == {
+        alice_msg["ciphertext"],
+        bob_msg["ciphertext"],
+    }
+    assert all("Hello" not in row.ciphertext for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_client_message_id_is_idempotent_for_retry(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    alice = await create_test_user(db_session, "alice_idempotent")
+    bob = await create_test_user(db_session, "bob_idempotent")
+    room_id = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+
+    payload = {
+        "client_message_id": "client-retry-1",
+        "recipient_id": str(bob.id),
+        "ciphertext": "cmV0cnktY2lwaGVydGV4dC1vbmx5",
+        "encrypted_header": "cmV0cnktaGVhZGVy",
+        "nonce": "cmV0cnktbm9uY2U",
+        "algorithm": "AES-256-GCM",
+    }
+    first = await client.post(
+        f"/api/v1/rooms/{room_id}/messages",
+        json=payload,
+        cookies=_cookies(alice),
+    )
+    second = await client.post(
+        f"/api/v1/rooms/{room_id}/messages",
+        json=payload,
+        cookies=_cookies(alice),
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert second.json()["id"] == first.json()["id"]
+
+    rows = (await db_session.execute(select(Message).where(Message.room_id == uuid.UUID(room_id)))).scalars().all()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
 async def test_non_member_cannot_read_messages(client: AsyncClient, db_session: AsyncSession):
     alice = await create_test_user(db_session, "alice_nm")
     bob = await create_test_user(db_session, "bob_nm")

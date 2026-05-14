@@ -20,6 +20,7 @@ import {
   decryptMessage,
   encryptInitialDirectMessage,
   encryptMessage,
+  rememberMessageKeyAlias,
 } from "@/crypto/cryptoService";
 import { encryptAttachmentFile } from "@/lib/attachmentCrypto";
 import {
@@ -32,6 +33,9 @@ import {
 
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { ConversationList } from "@/components/chat/ConversationList";
+import { DeleteMessageDialog } from "@/components/chat/DeleteMessageDialog";
+import { EditMessageInput } from "@/components/chat/EditMessageInput";
+import { ForwardMessageModal } from "@/components/chat/ForwardMessageModal";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { MessageInput } from "@/components/chat/MessageInput";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
@@ -65,6 +69,7 @@ export default function Chat() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [deletingMessage, setDeletingMessage] = useState<Message | null>(null);
   const [editText, setEditText] = useState("");
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -82,16 +87,16 @@ export default function Chat() {
   );
 
   const encryptForRoom = useCallback(
-    async (room: Room, plaintext: string) => {
+    async (room: Room, plaintext: string, localMessageId?: string) => {
       try {
-        return await encryptMessage(room.id, plaintext);
+        return await encryptMessage(room.id, plaintext, localMessageId);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (!message.includes("No session") || room.type !== "direct") throw error;
         const recipientId = resolveRecipient(room);
         if (!recipientId) throw new Error("Cannot find the recipient for this direct room");
         const bundle = await keyService.getBundle(recipientId);
-        return encryptInitialDirectMessage(room.id, plaintext, bundle);
+        return encryptInitialDirectMessage(room.id, plaintext, bundle, localMessageId);
       }
     },
     [resolveRecipient]
@@ -185,7 +190,7 @@ export default function Chat() {
       upsertMessage(room.id, optimistic, existingMessage?.id);
 
       try {
-        const encrypted = await encryptForRoom(room, plaintext);
+        const encrypted = await encryptForRoom(room, plaintext, tempId);
         const payload: EncryptedMessagePayload = {
           client_message_id: tempId,
           recipient_id: resolveRecipient(room),
@@ -195,6 +200,7 @@ export default function Chat() {
           algorithm: encrypted.algorithm,
           attachment_ids: envelope.attachments.map((attachment) => attachment.id),
         };
+        assertEncryptedPayload(payload);
 
         const sentOverWs = wsService.send({
           type: "encrypted_message",
@@ -204,6 +210,7 @@ export default function Chat() {
 
         if (!sentOverWs) {
           const saved = await messageService.send(room.id, payload);
+          await rememberMessageKeyAlias(room.id, tempId, saved.id);
           upsertMessage(room.id, { ...saved, decryptedText: plaintext, delivery_status: "sent" }, tempId);
         }
       } catch (error) {
@@ -241,6 +248,9 @@ export default function Chat() {
       const existing = useMessageStore.getState().messages[event.room_id]?.find(
         (item) => item.id === event.client_message_id || item.id === event.message_id
       );
+      if (event.client_message_id) {
+        await rememberMessageKeyAlias(event.room_id, event.client_message_id, event.message_id);
+      }
       const display =
         existing?.decryptedText && existing.sender_id === user?.id
           ? { ...message, decryptedText: existing.decryptedText }
@@ -261,6 +271,9 @@ export default function Chat() {
   const handleWsMessage = useCallback(
     async (msg: WSMessage) => {
       switch (msg.type) {
+        case "connected":
+          setConnectionStatus("relay");
+          break;
         case "encrypted_message":
         case "message_forwarded":
           await applyIncomingMessage(msg as WSEncryptedMessage);
@@ -311,7 +324,8 @@ export default function Chat() {
           }
           break;
         }
-        case "error": {
+        case "error":
+        case "message_error": {
           const error = msg as WSError;
           if (error.client_message_id && activeRoomId) {
             updateMessage(activeRoomId, error.client_message_id, { delivery_status: "failed" });
@@ -321,7 +335,7 @@ export default function Chat() {
         }
       }
     },
-    [activeRoomId, applyIncomingMessage, setPresence, setTyping, updateMessage]
+    [activeRoomId, applyIncomingMessage, setConnectionStatus, setPresence, setTyping, updateMessage]
   );
 
   useEffect(() => {
@@ -391,6 +405,7 @@ export default function Chat() {
     if (!editingMessage) return;
     const room = rooms.find((item) => item.id === editingMessage.room_id);
     if (!room) return;
+    const previous = editingMessage;
     try {
       const existingEnvelope = decodeMessageEnvelope(editingMessage.decryptedText);
       const envelope = createMessageEnvelope(
@@ -399,32 +414,48 @@ export default function Chat() {
         existingEnvelope.forwarded
       );
       const plaintext = encodeMessageEnvelope(envelope);
-      const encrypted = await encryptForRoom(room, plaintext);
-      const saved = await messageService.edit(editingMessage.id, {
+      const encrypted = await encryptForRoom(room, plaintext, editingMessage.id);
+      const editPayload: EncryptedMessagePayload = {
         recipient_id: editingMessage.recipient_id,
         ciphertext: encrypted.ciphertext,
         encrypted_header: encrypted.encryptedHeader,
         nonce: encrypted.nonce,
         algorithm: encrypted.algorithm,
+      };
+      assertEncryptedPayload(editPayload);
+      updateMessage(room.id, editingMessage.id, {
+        decryptedText: plaintext,
+        delivery_status: "sending",
+        edited_at: new Date().toISOString(),
       });
+      const saved = await messageService.edit(editingMessage.id, editPayload);
       upsertMessage(room.id, { ...saved, decryptedText: plaintext }, editingMessage.id);
       setEditingMessage(null);
       setEditText("");
     } catch (error) {
+      upsertMessage(room.id, previous, editingMessage.id);
       toast.error(error instanceof Error ? error.message : "Could not edit message");
     }
-  }, [editText, editingMessage, encryptForRoom, rooms, upsertMessage]);
+  }, [editText, editingMessage, encryptForRoom, rooms, updateMessage, upsertMessage]);
 
-  const deleteMessage = useCallback(
+  const confirmDeleteMessage = useCallback(
     async (message: Message) => {
+      const previous = message;
       try {
+        updateMessage(message.room_id, message.id, {
+          is_deleted: true,
+          decryptedText: undefined,
+          delivery_status: "sending",
+        });
         const deleted = await messageService.delete(message.id);
         upsertMessage(message.room_id, { ...deleted, decryptedText: undefined }, message.id);
+        setDeletingMessage(null);
       } catch (error) {
+        upsertMessage(message.room_id, previous, message.id);
         toast.error(error instanceof Error ? error.message : "Could not delete message");
       }
     },
-    [upsertMessage]
+    [updateMessage, upsertMessage]
   );
 
   const forwardToRoom = useCallback(
@@ -437,8 +468,8 @@ export default function Chat() {
         const attachments = await cloneAttachmentsForRoom(targetRoomId, sourceEnvelope.attachments);
         const envelope = createMessageEnvelope(sourceEnvelope.text, attachments, true);
         const plaintext = encodeMessageEnvelope(envelope);
-        const encrypted = await encryptForRoom(targetRoom, plaintext);
         const tempId = `temp-${Date.now()}`;
+        const encrypted = await encryptForRoom(targetRoom, plaintext, tempId);
         const optimistic: Message = {
           id: tempId,
           room_id: targetRoom.id,
@@ -455,7 +486,7 @@ export default function Chat() {
           decryptedText: plaintext,
         };
         addMessage(targetRoom.id, optimistic);
-        const saved = await messageService.forward(forwardingMessage.id, targetRoom.id, {
+        const forwardPayload: EncryptedMessagePayload = {
           client_message_id: tempId,
           recipient_id: resolveRecipient(targetRoom),
           ciphertext: encrypted.ciphertext,
@@ -463,7 +494,10 @@ export default function Chat() {
           nonce: encrypted.nonce,
           algorithm: encrypted.algorithm,
           attachment_ids: attachments.map((attachment) => attachment.id),
-        });
+        };
+        assertEncryptedPayload(forwardPayload);
+        const saved = await messageService.forward(forwardingMessage.id, targetRoom.id, forwardPayload);
+        await rememberMessageKeyAlias(targetRoom.id, tempId, saved.id);
         upsertMessage(targetRoom.id, { ...saved, decryptedText: plaintext }, tempId);
         setForwardingMessage(null);
       } catch (error) {
@@ -614,7 +648,7 @@ export default function Chat() {
                         : undefined
                     }
                     onEdit={openEdit}
-                    onDelete={deleteMessage}
+                    onDelete={setDeletingMessage}
                     onForward={setForwardingMessage}
                     onResend={resendMessage}
                   />
@@ -652,40 +686,33 @@ export default function Chat() {
           <ModalShell onClose={() => setEditingMessage(null)}>
             <div className="w-full max-w-md rounded-lg border border-border bg-panel p-4 shadow-panel">
               <ModalHeader title="Edit Message" onClose={() => setEditingMessage(null)} />
-              <textarea
+              <EditMessageInput
                 value={editText}
-                onChange={(event) => setEditText(event.target.value)}
-                className="input-field min-h-28 resize-none"
+                onChange={setEditText}
+                onCancel={() => setEditingMessage(null)}
+                onSave={saveEdit}
               />
-              <div className="mt-3 flex justify-end gap-2">
-                <button className="btn-ghost" onClick={() => setEditingMessage(null)}>
-                  Cancel
-                </button>
-                <button className="btn-primary" onClick={saveEdit} disabled={!editText.trim()}>
-                  Save
-                </button>
-              </div>
             </div>
+          </ModalShell>
+        )}
+        {deletingMessage && (
+          <ModalShell onClose={() => setDeletingMessage(null)}>
+            <DeleteMessageDialog
+              onCancel={() => setDeletingMessage(null)}
+              onConfirm={() => confirmDeleteMessage(deletingMessage)}
+            />
           </ModalShell>
         )}
         {forwardingMessage && (
           <ModalShell onClose={() => setForwardingMessage(null)}>
             <div className="w-full max-w-md rounded-lg border border-border bg-panel p-4 shadow-panel">
               <ModalHeader title="Forward To" onClose={() => setForwardingMessage(null)} />
-              <div className="mt-2 max-h-80 overflow-y-auto">
-                {rooms
-                  .filter((room) => room.id !== forwardingMessage.room_id)
-                  .map((room) => (
-                    <button
-                      key={room.id}
-                      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface hover:text-text-primary"
-                      onClick={() => forwardToRoom(room.id)}
-                    >
-                      <span>{roomLabel(room, user.id)}</span>
-                      <span className="font-mono text-xs text-text-muted">{room.type}</span>
-                    </button>
-                  ))}
-              </div>
+              <ForwardMessageModal
+                rooms={rooms}
+                currentRoomId={forwardingMessage.room_id}
+                currentUser={user}
+                onForward={forwardToRoom}
+              />
             </div>
           </ModalShell>
         )}
@@ -730,10 +757,11 @@ function ModalHeader({ title, onClose }: { title: string; onClose: () => void })
   );
 }
 
-function roomLabel(room: Room, currentUserId: string): string {
-  if (room.type === "group") return `${room.members.length} members`;
-  const other = room.members.find((member) => member.user_id !== currentUserId);
-  return other?.user?.display_name ?? "Direct conversation";
+function assertEncryptedPayload(payload: EncryptedMessagePayload): void {
+  const record = payload as unknown as Record<string, unknown>;
+  const plaintextFields = ["content", "text", "plaintext", "decrypted", "decryptedText"];
+  const leakedField = plaintextFields.find((field) => field in record);
+  console.assert(!leakedField, "Outgoing message payload must not contain plaintext fields");
 }
 
 function EmptyState({ onNewChat }: { onNewChat: () => void }) {

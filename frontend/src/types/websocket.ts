@@ -1,6 +1,7 @@
 // WebSocket message type union
 
 export type WSMessageType =
+  | "connected"
   | "encrypted_message"
   | "message_edited"
   | "message_deleted"
@@ -14,12 +15,18 @@ export type WSMessageType =
   | "webrtc_offer"
   | "webrtc_answer"
   | "webrtc_ice_candidate"
+  | "message_error"
   | "error"
   | "heartbeat"
   | "heartbeat_ack";
 
 export interface WSBase {
   type: WSMessageType;
+}
+
+export interface WSConnected extends WSBase {
+  type: "connected";
+  user_id: string;
 }
 
 export interface WSEncryptedMessage extends WSBase {
@@ -91,7 +98,7 @@ export interface WSWebRTCIce extends WSBase {
 }
 
 export interface WSError extends WSBase {
-  type: "error";
+  type: "error" | "message_error";
   code: string;
   detail: string;
   client_message_id?: string;
@@ -104,6 +111,7 @@ export interface WSAttachmentUploaded extends WSBase {
 }
 
 export type WSMessage =
+  | WSConnected
   | WSEncryptedMessage
   | WSTyping
   | WSPresenceUpdate

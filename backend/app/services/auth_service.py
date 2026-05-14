@@ -17,16 +17,19 @@ import json
 from typing import Any
 
 import redis.asyncio as aioredis
-from webauthn.helpers import base64url_to_bytes
+from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
 
 from app.core.config import settings
 from app.core.exceptions import (
     AuthenticationError,
+    ForbiddenError,
+    NotFoundError,
     UsernameConflictError,
     WebAuthnError,
 )
 from app.core.logging import audit_log, get_logger
 from app.core.passkey_manager import passkey_manager
+from app.models.credential import WebAuthnCredential
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 
@@ -321,3 +324,98 @@ class AuthService:
         )
         audit_log("user_logged_in", user_id=user.id)
         return user
+
+    # ── Additional passkeys/devices ──────────────────────────────────────
+
+    async def begin_passkey_registration(self, user: User) -> dict[str, Any]:
+        credentials = await self._users.get_credentials_for_user(user.id)
+        options, challenge_b64 = passkey_manager.generate_registration_options(
+            user_id=user.id,
+            username=user.username,
+            display_name=user.display_name,
+            existing_credentials=[credential.credential_id for credential in credentials],
+        )
+        await self._store_challenge(
+            "passkey",
+            str(user.id),
+            {
+                "challenge": challenge_b64,
+                "user_id": str(user.id),
+            },
+        )
+        return options
+
+    async def complete_passkey_registration(
+        self,
+        user: User,
+        credential_raw: dict[str, Any],
+    ) -> WebAuthnCredential:
+        challenge_record = await self._load_challenge("passkey", str(user.id))
+        if not challenge_record:
+            raise WebAuthnError("Challenge expired or not found — restart passkey setup")
+
+        if challenge_record.get("user_id") != str(user.id):
+            await self._delete_challenge("passkey", str(user.id))
+            raise AuthenticationError("Invalid passkey setup challenge")
+
+        try:
+            verification = passkey_manager.verify_registration(
+                credential_raw,
+                challenge_record["challenge"],
+            )
+        finally:
+            await self._delete_challenge("passkey", str(user.id))
+
+        existing = await self._users.get_credential_by_id(verification.credential_id)
+        if existing:
+            raise WebAuthnError("This passkey is already registered")
+
+        transports = None
+        credential_response = credential_raw.get("response")
+        if isinstance(credential_response, dict):
+            raw_transports = credential_response.get("transports")
+            if isinstance(raw_transports, list):
+                transports = [str(t) for t in raw_transports]
+
+        credential = await self._users.add_credential(
+            user_id=user.id,
+            credential_id=verification.credential_id,
+            public_key=verification.credential_public_key,
+            sign_count=verification.sign_count,
+            transports=transports,
+        )
+        log.info(
+            "webauthn_passkey_added",
+            user_id=str(user.id),
+            credential_id_length=len(verification.credential_id),
+            public_key_length=len(verification.credential_public_key),
+        )
+        audit_log("passkey_added", user_id=user.id)
+        return credential
+
+    async def list_passkeys(self, user_id: uuid.UUID) -> list[WebAuthnCredential]:
+        return await self._users.get_credentials_for_user(user_id)
+
+    async def delete_passkey(
+        self,
+        user_id: uuid.UUID,
+        credential_record_id: uuid.UUID,
+    ) -> None:
+        credential = await self._users.get_credential_record_by_id(credential_record_id)
+        if not credential:
+            raise NotFoundError("Passkey not found")
+        if credential.user_id != user_id:
+            raise ForbiddenError("You cannot delete another user's passkey")
+        if await self._users.count_credentials_for_user(user_id) <= 1:
+            raise ForbiddenError("You must keep at least one passkey on the account")
+        await self._users.delete_credential(credential)
+        audit_log("passkey_deleted", user_id=user_id)
+
+
+def passkey_to_response(credential: WebAuthnCredential) -> dict[str, Any]:
+    return {
+        "id": credential.id,
+        "credential_id": bytes_to_base64url(credential.credential_id),
+        "transports": credential.transports.split(",") if credential.transports else [],
+        "created_at": credential.created_at,
+    }

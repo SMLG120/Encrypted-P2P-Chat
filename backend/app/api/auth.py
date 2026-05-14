@@ -24,11 +24,13 @@ from app.schemas.auth import (
     AuthResponse,
     LoginOptionsRequest,
     LoginVerifyRequest,
+    PasskeyResponse,
+    PasskeyVerifyRequest,
     RegistrationOptionsRequest,
     RegistrationVerifyRequest,
     UserResponse,
 )
-from app.services.auth_service import AuthService
+from app.services.auth_service import AuthService, passkey_to_response
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 log = get_logger(__name__)
@@ -127,3 +129,49 @@ async def logout(response: Response, current_user: CurrentUser) -> dict:
 @router.get("/me")
 async def me(current_user: CurrentUser) -> UserResponse:
     return UserResponse.model_validate(current_user)
+
+
+@router.post("/passkeys/options")
+@limiter.limit(settings.RATE_LIMIT_AUTH)
+async def passkey_options(
+    request: Request,
+    current_user: CurrentUser,
+    auth_svc: AuthService = Depends(_get_auth_service),
+) -> dict:
+    return await auth_svc.begin_passkey_registration(current_user)
+
+
+@router.post("/passkeys/verify", status_code=201)
+@limiter.limit(settings.RATE_LIMIT_AUTH)
+async def passkey_verify(
+    request: Request,
+    body: PasskeyVerifyRequest,
+    current_user: CurrentUser,
+    auth_svc: AuthService = Depends(_get_auth_service),
+) -> PasskeyResponse:
+    credential = await auth_svc.complete_passkey_registration(
+        current_user,
+        body.credential,
+    )
+    return PasskeyResponse.model_validate(passkey_to_response(credential))
+
+
+@router.get("/passkeys")
+async def list_passkeys(
+    current_user: CurrentUser,
+    auth_svc: AuthService = Depends(_get_auth_service),
+) -> list[PasskeyResponse]:
+    credentials = await auth_svc.list_passkeys(current_user.id)
+    return [
+        PasskeyResponse.model_validate(passkey_to_response(credential))
+        for credential in credentials
+    ]
+
+
+@router.delete("/passkeys/{credential_id}", status_code=204)
+async def delete_passkey(
+    credential_id: uuid.UUID,
+    current_user: CurrentUser,
+    auth_svc: AuthService = Depends(_get_auth_service),
+) -> None:
+    await auth_svc.delete_passkey(current_user.id, credential_id)

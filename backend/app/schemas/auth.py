@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 class RegistrationOptionsRequest(BaseModel):
@@ -26,6 +27,10 @@ class RegistrationOptionsResponse(BaseModel):
 class RegistrationVerifyRequest(BaseModel):
     username: str
     display_name: str
+    credential: dict[str, Any]
+
+
+class PasskeyVerifyRequest(BaseModel):
     credential: dict[str, Any]
 
 
@@ -58,3 +63,12 @@ class UserResponse(BaseModel):
 class AuthResponse(BaseModel):
     user: UserResponse
     message: str = "Authentication successful"
+
+
+class PasskeyResponse(BaseModel):
+    id: uuid.UUID
+    credential_id: str
+    transports: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

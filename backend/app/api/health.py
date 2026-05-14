@@ -1,6 +1,7 @@
 """Health check endpoint."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, status
+from fastapi.responses import JSONResponse
 
 router = APIRouter(tags=["health"])
 
@@ -35,4 +36,10 @@ async def readiness() -> dict:
         checks["redis"] = f"error: {exc}"
 
     all_ok = all(v == "ok" for v in checks.values())
-    return {"status": "ready" if all_ok else "degraded", "checks": checks}
+    payload = {"status": "ready" if all_ok else "degraded", "checks": checks}
+    if not all_ok:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=payload,
+        )
+    return payload

@@ -48,7 +48,7 @@ class MessageUpdate(EncryptedPayloadMixin):
 
 class MessageForward(BaseModel):
     target_room_id: uuid.UUID
-    payload: EncryptedPayloadMixin
+    payload: MessageCreate
     client_message_id: str | None = Field(None, max_length=128)
 
     model_config = {"extra": "forbid"}
@@ -70,6 +70,7 @@ class AttachmentResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     id: uuid.UUID
+    client_message_id: str | None = None
     room_id: uuid.UUID
     sender_id: uuid.UUID
     recipient_id: uuid.UUID | None

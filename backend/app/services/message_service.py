@@ -58,6 +58,7 @@ class MessageService:
     def to_response(self, msg: Message) -> MessageResponse:
         return MessageResponse(
             id=msg.id,
+            client_message_id=msg.client_message_id,
             room_id=msg.room_id,
             sender_id=msg.sender_id,
             recipient_id=msg.recipient_id,
@@ -127,6 +128,14 @@ class MessageService:
         sender_id: uuid.UUID,
         payload: MessageCreate,
     ) -> Message:
+        if payload.client_message_id:
+            existing = await self._messages.get_by_client_message_id(
+                sender_id,
+                payload.client_message_id,
+            )
+            if existing:
+                return existing
+
         recipient_id, attachments = await self._normalize_payload(room_id, sender_id, payload)
 
         # SECURITY: Store only ciphertext — server never decrypts this
@@ -139,6 +148,7 @@ class MessageService:
             recipient_id=recipient_id,
             encrypted_header=payload.encrypted_header,
             transport="stored",
+            client_message_id=payload.client_message_id,
         )
         await self._messages.attach_to_message(attachments, msg.id)
         set_committed_value(msg, "attachments", attachments)
@@ -157,9 +167,10 @@ class MessageService:
             raise ForbiddenError("You are not a member of this room")
 
         msgs, has_more = await self._messages.get_room_messages(room_id, limit, before_id)
+        chronological = list(reversed(msgs))
         return MessageListResponse(
-            messages=[self.to_response(m) for m in msgs],
-            total=len(msgs),
+            messages=[self.to_response(m) for m in chronological],
+            total=len(chronological),
             has_more=has_more,
         )
 
@@ -205,6 +216,15 @@ class MessageService:
             raise MessageNotFoundError()
         await self._ensure_room_member(source.room_id, sender_id)
 
+        client_message_id = body.client_message_id or body.payload.client_message_id
+        if client_message_id:
+            existing = await self._messages.get_by_client_message_id(
+                sender_id,
+                client_message_id,
+            )
+            if existing:
+                return existing
+
         recipient_id, attachments = await self._normalize_payload(
             body.target_room_id, sender_id, body.payload
         )
@@ -218,6 +238,7 @@ class MessageService:
             encrypted_header=body.payload.encrypted_header,
             transport="stored",
             forwarded_from_message_id=source.id,
+            client_message_id=client_message_id,
         )
         await self._messages.attach_to_message(attachments, msg.id)
         set_committed_value(msg, "attachments", attachments)

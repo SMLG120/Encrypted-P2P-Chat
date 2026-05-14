@@ -53,6 +53,7 @@ class RoomRepository:
                     select(Membership.room_id).where(Membership.user_id == user_b)
                 )
             )
+            .options(selectinload(Room.memberships).selectinload(Membership.user))
         )
         return result.scalars().first()
 

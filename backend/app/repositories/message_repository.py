@@ -28,11 +28,13 @@ class MessageRepository:
         encrypted_header: str | None = None,
         transport: str = "stored",
         forwarded_from_message_id: uuid.UUID | None = None,
+        client_message_id: str | None = None,
     ) -> Message:
         msg = Message(
             room_id=room_id,
             sender_id=sender_id,
             recipient_id=recipient_id,
+            client_message_id=client_message_id,
             ciphertext=ciphertext,
             encrypted_header=encrypted_header,
             nonce=nonce,
@@ -40,10 +42,26 @@ class MessageRepository:
             transport=transport,
             delivery_status="sent",
             forwarded_from_message_id=forwarded_from_message_id,
+            created_at=datetime.now(timezone.utc),
         )
         self._db.add(msg)
         await self._db.flush()
         return msg
+
+    async def get_by_client_message_id(
+        self,
+        sender_id: uuid.UUID,
+        client_message_id: str,
+    ) -> Message | None:
+        result = await self._db.execute(
+            select(Message)
+            .where(
+                Message.sender_id == sender_id,
+                Message.client_message_id == client_message_id,
+            )
+            .options(selectinload(Message.attachments))
+        )
+        return result.scalar_one_or_none()
 
     async def update_encrypted_payload(
         self,
@@ -92,7 +110,7 @@ class MessageRepository:
         result = await self._db.execute(stmt.limit(limit + 1))
         msgs = result.scalars().all()
         has_more = len(msgs) > limit
-        return list(reversed(msgs[:limit])), has_more
+        return msgs[:limit], has_more
 
     async def get_by_id(self, message_id: uuid.UUID) -> Message | None:
         result = await self._db.execute(

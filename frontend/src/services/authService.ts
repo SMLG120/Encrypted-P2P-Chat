@@ -147,4 +147,36 @@ export const authService = {
       return null;
     }
   },
+
+  async beginPasskeyRegistration(): Promise<Record<string, unknown>> {
+    return api.post<Record<string, unknown>>("/auth/passkeys/options");
+  },
+
+  async addPasskey(): Promise<{
+    id: string;
+    credential_id: string;
+    transports: string[];
+    created_at: string;
+  }> {
+    const options = await api.post<Record<string, unknown>>("/auth/passkeys/options");
+    const cred = await navigator.credentials.create({
+      publicKey: deserializeRegistrationOptions(options),
+    }) as PublicKeyCredential;
+    return api.post("/auth/passkeys/verify", {
+      credential: serializeCredential(cred),
+    });
+  },
+
+  async listPasskeys(): Promise<Array<{
+    id: string;
+    credential_id: string;
+    transports: string[];
+    created_at: string;
+  }>> {
+    return api.get("/auth/passkeys");
+  },
+
+  async deletePasskey(id: string): Promise<void> {
+    await api.delete(`/auth/passkeys/${id}`);
+  },
 };

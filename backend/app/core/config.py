@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     WEBAUTHN_RP_ID: str = "localhost"
     WEBAUTHN_RP_NAME: str = "Encrypted P2P Chat"
     # Default to the Vite dev origin. Docker/production override this via env.
-    WEBAUTHN_ORIGIN: str = "http://localhost:5173"
+    WEBAUTHN_ORIGIN: list[str] | str = ["http://localhost", "http://localhost:5173"]
     WEBAUTHN_CHALLENGE_TTL: int = 300  # seconds
 
     # ── Database ──────────────────────────────────────────────────────────
@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def parse_origins(cls, v: str | list) -> list[str]:
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
+
+    @field_validator("WEBAUTHN_ORIGIN", mode="before")
+    @classmethod
+    def parse_webauthn_origins(cls, v: str | list) -> list[str]:
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v

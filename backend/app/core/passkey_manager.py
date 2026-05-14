@@ -80,8 +80,13 @@ class PasskeyManager:
             )
             return verification
         except Exception as exc:
-            log.warning("webauthn_registration_failed", error=str(exc))
-            raise WebAuthnError(f"Registration verification failed: {exc}") from exc
+            log.warning(
+                "webauthn_registration_failed",
+                error_type=exc.__class__.__name__,
+                rp_id=self.rp_id,
+                origins=self.origin,
+            )
+            raise WebAuthnError("Registration verification failed") from exc
 
     def generate_authentication_options(
         self,
@@ -117,8 +122,13 @@ class PasskeyManager:
             )
             return verification
         except Exception as exc:
-            log.warning("webauthn_authentication_failed", error=str(exc))
-            raise WebAuthnError(f"Authentication verification failed: {exc}") from exc
+            log.warning(
+                "webauthn_authentication_failed",
+                error_type=exc.__class__.__name__,
+                rp_id=self.rp_id,
+                origins=self.origin,
+            )
+            raise WebAuthnError("Authentication verification failed") from exc
 
 
 passkey_manager = PasskeyManager()

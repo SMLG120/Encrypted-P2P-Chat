@@ -1,19 +1,10 @@
-import type { ReactNode } from "react";
-import {
-  AlertCircle,
-  Check,
-  CheckCheck,
-  Clock,
-  Forward,
-  Lock,
-  MoreHorizontal,
-  Pencil,
-  RotateCcw,
-  Trash2,
-} from "lucide-react";
+import { useRef, useState } from "react";
+import { AlertCircle, Clock, Forward, Lock } from "lucide-react";
 import { clsx } from "clsx";
 import { formatMessageTime } from "@/lib/date";
 import { AttachmentPreview } from "@/components/chat/AttachmentPreview";
+import { MessageActions } from "@/components/chat/MessageActions";
+import { MessageStatus } from "@/components/chat/MessageStatus";
 import { decodeMessageEnvelope } from "@/lib/messageEnvelope";
 import type { Message } from "@/types/chat";
 
@@ -36,12 +27,30 @@ export function MessageBubble({
   onForward,
   onResend,
 }: MessageBubbleProps) {
+  const [actionsPinned, setActionsPinned] = useState(false);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isDecrypted = message.decryptedText !== undefined;
   const failed = message.decryptionFailed;
   const envelope = decodeMessageEnvelope(message.decryptedText);
   const canEdit = isMine && isDecrypted && !message.is_deleted && message.delivery_status !== "failed";
   const canDelete = isMine && !message.is_deleted && message.delivery_status !== "failed";
   const canForward = isDecrypted && !message.is_deleted && message.delivery_status !== "failed";
+  const canRetry = isMine && message.delivery_status === "failed";
+
+  const copyMessage = () => {
+    const value = envelope.text || message.decryptedText || "";
+    if (value) void navigator.clipboard?.writeText(value);
+    setActionsPinned(false);
+  };
+
+  const startLongPress = () => {
+    longPressTimer.current = setTimeout(() => setActionsPinned(true), 350);
+  };
+
+  const cancelLongPress = () => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    longPressTimer.current = null;
+  };
 
   return (
     <div className={clsx("flex flex-col gap-1 max-w-[72%]", isMine && "items-end self-end", !isMine && "items-start self-start")}>
@@ -49,8 +58,15 @@ export function MessageBubble({
         <span className="text-xs text-text-muted font-mono px-1">{senderName}</span>
       )}
       <div
+        tabIndex={0}
+        onPointerDown={(event) => {
+          if (event.pointerType !== "mouse") startLongPress();
+        }}
+        onPointerUp={cancelLongPress}
+        onPointerCancel={cancelLongPress}
+        onBlur={() => setActionsPinned(false)}
         className={clsx(
-          "group relative px-4 py-2.5 rounded-2xl",
+          "group relative px-4 py-2.5 rounded-2xl outline-none",
           isMine
             ? "bg-cyan/10 border border-cyan/20 text-text-primary rounded-br-sm"
             : "bg-panel border border-border text-text-primary rounded-bl-sm",
@@ -106,36 +122,31 @@ export function MessageBubble({
           </div>
         )}
 
-        <div
-          className={clsx(
-            "absolute top-1 hidden items-center gap-1 rounded-md border border-border bg-surface/95 p-1 shadow-panel group-hover:flex",
-            isMine ? "right-full mr-2" : "left-full ml-2"
-          )}
-        >
-          {canEdit && (
-            <IconButton title="Edit" onClick={() => onEdit?.(message)}>
-              <Pencil size={13} />
-            </IconButton>
-          )}
-          {canDelete && (
-            <IconButton title="Delete" onClick={() => onDelete?.(message)}>
-              <Trash2 size={13} />
-            </IconButton>
-          )}
-          {canForward && (
-            <IconButton title="Forward" onClick={() => onForward?.(message)}>
-              <Forward size={13} />
-            </IconButton>
-          )}
-          {isMine && message.delivery_status === "failed" && (
-            <IconButton title="Resend" onClick={() => onResend?.(message)}>
-              <RotateCcw size={13} />
-            </IconButton>
-          )}
-          {!canEdit && !canDelete && !canForward && message.delivery_status !== "failed" && (
-            <MoreHorizontal size={13} className="text-text-muted" />
-          )}
-        </div>
+        <MessageActions
+          align={isMine ? "right" : "left"}
+          canEdit={canEdit}
+          canDelete={canDelete}
+          canForward={canForward}
+          canRetry={canRetry}
+          visible={actionsPinned}
+          onEdit={() => {
+            setActionsPinned(false);
+            onEdit?.(message);
+          }}
+          onDelete={() => {
+            setActionsPinned(false);
+            onDelete?.(message);
+          }}
+          onForward={() => {
+            setActionsPinned(false);
+            onForward?.(message);
+          }}
+          onCopy={copyMessage}
+          onRetry={() => {
+            setActionsPinned(false);
+            onResend?.(message);
+          }}
+        />
       </div>
 
       {/* Status row */}
@@ -144,37 +155,8 @@ export function MessageBubble({
           {formatMessageTime(message.created_at)}
           {message.edited_at && !message.is_deleted ? " · edited" : ""}
         </span>
-        {isMine && <DeliveryIcon status={message.delivery_status} />}
+        {isMine && <MessageStatus status={message.delivery_status} />}
       </div>
     </div>
   );
-}
-
-function IconButton({
-  title,
-  onClick,
-  children,
-}: {
-  title: string;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      onClick={onClick}
-      className="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-border hover:text-cyan"
-    >
-      {children}
-    </button>
-  );
-}
-
-function DeliveryIcon({ status }: { status: Message["delivery_status"] }) {
-  if (status === "sending") return <Clock size={12} className="text-text-muted" />;
-  if (status === "failed") return <AlertCircle size={12} className="text-rose" />;
-  if (status === "read") return <CheckCheck size={12} className="text-cyan" />;
-  if (status === "delivered") return <CheckCheck size={12} className="text-text-muted" />;
-  return <Check size={12} className="text-text-muted" />;
 }
