@@ -1,6 +1,8 @@
 import { useState, useCallback } from "react";
 import { Search, UserPlus, X } from "lucide-react";
+import { toast } from "sonner";
 import { roomService } from "@/services/roomService";
+import { useAuthStore } from "@/stores/authStore";
 import { useRoomStore } from "@/stores/roomStore";
 
 interface UserSearchProps {
@@ -12,6 +14,7 @@ export function UserSearch({ onClose, onRoomCreated }: UserSearchProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Array<{ id: string; username: string; display_name: string }>>([]);
   const [loading, setLoading] = useState(false);
+  const currentUser = useAuthStore((s) => s.user);
   const addRoom = useRoomStore((s) => s.addRoom);
 
   const search = useCallback(async (q: string) => {
@@ -19,24 +22,29 @@ export function UserSearch({ onClose, onRoomCreated }: UserSearchProps) {
     setLoading(true);
     try {
       const data = await roomService.searchUsers(q);
-      setResults(data.users);
-    } catch {
+      setResults(data.users.filter((user) => user.id !== currentUser?.id));
+    } catch (error) {
       setResults([]);
+      toast.error(error instanceof Error ? error.message : "Could not search users");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentUser?.id]);
 
   const startChat = useCallback(async (userId: string) => {
+    if (userId === currentUser?.id) {
+      toast.error("You cannot create a direct chat with yourself");
+      return;
+    }
     try {
       const room = await roomService.create("direct", [userId]);
       addRoom(room);
       onRoomCreated(room.id);
       onClose();
-    } catch (e) {
-      console.error(e);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create conversation");
     }
-  }, [addRoom, onRoomCreated, onClose]);
+  }, [addRoom, currentUser?.id, onRoomCreated, onClose]);
 
   return (
     <div className="glass-bright rounded-2xl border border-border-bright shadow-panel overflow-hidden w-80">

@@ -25,7 +25,12 @@ async def search_users(
     db: DbDep = None,
 ) -> UserSearchResponse:
     repo = UserRepository(db)
-    users, total = await repo.search(q, limit=limit, offset=offset)
+    users, total = await repo.search(
+        q,
+        limit=limit,
+        offset=offset,
+        exclude_user_id=current_user.id,
+    )
     return UserSearchResponse(
         users=[UserPublicProfile.model_validate(u) for u in users],
         total=total,

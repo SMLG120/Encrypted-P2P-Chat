@@ -3,6 +3,9 @@ import { Link, useNavigate } from "react-router-dom";
 import { Lock, Fingerprint, Loader2, AlertCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import { authService } from "@/services/authService";
+import { keyService } from "@/services/keyService";
+import { setupIdentity } from "@/crypto/cryptoService";
+import { getIdentityKey } from "@/crypto/keyStore";
 import { useAuthStore } from "@/stores/authStore";
 import { parseApiError } from "@/lib/errors";
 
@@ -21,6 +24,12 @@ export default function Login() {
     try {
       const user = await authService.login(username);
       setUser(user);
+
+      const identityKey = await getIdentityKey();
+      if (!identityKey) {
+        await setupIdentity((bundle) => keyService.uploadBundle(bundle));
+      }
+
       navigate("/chat");
     } catch (err) {
       setError(parseApiError(err));

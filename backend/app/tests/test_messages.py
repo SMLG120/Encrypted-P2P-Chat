@@ -94,6 +94,36 @@ async def test_cannot_send_plaintext_content_field(client: AsyncClient, db_sessi
 
 
 @pytest.mark.asyncio
+async def test_cannot_send_private_key_or_ratchet_state_fields(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    alice = await create_test_user(db_session, "alice_key_leak")
+    bob = await create_test_user(db_session, "bob_key_leak")
+
+    resp = await client.post(
+        "/api/v1/rooms",
+        json={"type": "direct", "member_ids": [str(bob.id)]},
+        cookies=_cookies(alice),
+    )
+    room_id = resp.json()["id"]
+
+    resp2 = await client.post(
+        f"/api/v1/rooms/{room_id}/messages",
+        json={
+            "recipient_id": str(bob.id),
+            "ciphertext": "ZW5jcnlwdGVkLXBheWxvYWQtb25seQ",
+            "nonce": "bm9uY2Uta2V5LWxlYWs",
+            "private_key": "must-never-cross-the-network",
+            "ratchet_state": {"chain_key": "also-forbidden"},
+        },
+        cookies=_cookies(alice),
+    )
+
+    assert resp2.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_list_messages_returns_ciphertext_only(client: AsyncClient, db_session: AsyncSession):
     alice = await create_test_user(db_session, "alice_list")
     bob = await create_test_user(db_session, "bob_list")

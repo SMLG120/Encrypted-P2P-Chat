@@ -23,6 +23,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from app.core.config import settings
 from app.core.dependencies import get_db, get_redis
+from app.core.exceptions import AppError
 from app.core.logging import get_logger
 from app.core.websocket_manager import ws_manager
 from app.models.user import User
@@ -32,12 +33,15 @@ from app.repositories.user_repository import UserRepository
 from app.schemas.message import MessageCreate
 from app.services.message_service import MessageService
 from app.services.presence_service import PresenceService
+from app.services.websocket_service import (
+    contains_forbidden_message_field,
+    message_event,
+)
 
 log = get_logger(__name__)
 router = APIRouter(tags=["websocket"])
 
 _signer = URLSafeTimedSerializer(settings.SECRET_KEY, salt="session")
-_PLAINTEXT_FIELDS = frozenset({"content", "text", "plaintext", "decrypted", "decrypted_text"})
 
 
 async def _send_error(websocket: WebSocket, code: str, detail: str, **extra) -> None:
@@ -46,17 +50,8 @@ async def _send_error(websocket: WebSocket, code: str, detail: str, **extra) -> 
     )
 
 
-def _message_event(event_type: str, msg, client_message_id: str | None = None) -> dict:
-    payload = msg.model_dump(mode="json")
-    payload["type"] = event_type
-    payload["message_id"] = payload.pop("id")
-    if client_message_id:
-        payload["client_message_id"] = client_message_id
-    return payload
-
-
-def _contains_plaintext_field(payload: dict) -> bool:
-    return any(field in payload for field in _PLAINTEXT_FIELDS)
+def _safe_ws_error_detail(exc: Exception, fallback: str) -> str:
+    return exc.detail if isinstance(exc, AppError) else fallback
 
 
 async def _authenticate_ws(
@@ -143,11 +138,11 @@ async def websocket_endpoint(
                 elif msg_type == "encrypted_message":
                     client_message_id = msg.get("client_message_id")
                     try:
-                        if _contains_plaintext_field(msg):
+                        if contains_forbidden_message_field(msg):
                             await _send_error(
                                 websocket,
                                 "plaintext_rejected",
-                                "Messages must be encrypted before sending",
+                                "Encrypted messages must not include plaintext, private keys, or ratchet state",
                                 client_message_id=client_message_id,
                             )
                             continue
@@ -164,7 +159,7 @@ async def websocket_endpoint(
                         saved = await message_service.send_message(room_id, user.id, body)
                         await db.commit()
                         response = message_service.to_response(saved)
-                        event = _message_event("encrypted_message", response, client_message_id)
+                        event = message_event("encrypted_message", response, client_message_id)
                         member_ids = await message_service.room_member_ids(room_id)
                         recipient_ids = [uid for uid in member_ids if uid != user.id]
                         sent_count = await ws_manager.broadcast_to_users(recipient_ids, event)
@@ -184,11 +179,19 @@ async def websocket_endpoint(
                             )
                     except Exception as exc:
                         await db.rollback()
-                        log.warning("ws_encrypted_message_failed", user_id=str(user.id), error=str(exc))
+                        detail = _safe_ws_error_detail(
+                            exc,
+                            "Invalid encrypted message payload",
+                        )
+                        log.warning(
+                            "ws_encrypted_message_failed",
+                            user_id=str(user.id),
+                            error_type=exc.__class__.__name__,
+                        )
                         await _send_error(
                             websocket,
                             "message_send_failed",
-                            str(exc),
+                            detail,
                             client_message_id=client_message_id,
                         )
 
@@ -247,7 +250,16 @@ async def websocket_endpoint(
                             pass
                         except Exception as exc:
                             await db.rollback()
-                            await _send_error(websocket, "read_receipt_failed", str(exc))
+                            log.warning(
+                                "ws_read_receipt_failed",
+                                user_id=str(user.id),
+                                error_type=exc.__class__.__name__,
+                            )
+                            await _send_error(
+                                websocket,
+                                "read_receipt_failed",
+                                _safe_ws_error_detail(exc, "Could not mark message as read"),
+                            )
 
                 elif msg_type == "delivery_receipt":
                     message_id = msg.get("message_id")
@@ -272,7 +284,16 @@ async def websocket_endpoint(
                             pass
                         except Exception as exc:
                             await db.rollback()
-                            await _send_error(websocket, "delivery_receipt_failed", str(exc))
+                            log.warning(
+                                "ws_delivery_receipt_failed",
+                                user_id=str(user.id),
+                                error_type=exc.__class__.__name__,
+                            )
+                            await _send_error(
+                                websocket,
+                                "delivery_receipt_failed",
+                                _safe_ws_error_detail(exc, "Could not mark message as delivered"),
+                            )
 
         except WebSocketDisconnect:
             pass

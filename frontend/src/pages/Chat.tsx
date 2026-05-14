@@ -20,7 +20,9 @@ import {
   decryptMessage,
   encryptInitialDirectMessage,
   encryptMessage,
+  ensureLocalIdentity,
   rememberMessageKeyAlias,
+  setupIdentity,
 } from "@/crypto/cryptoService";
 import { encryptAttachmentFile } from "@/lib/attachmentCrypto";
 import {
@@ -59,6 +61,12 @@ export default function Chat() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
+  const encryptionSetupStatus = useAuthStore((s) => s.encryptionSetupStatus);
+  const encryptionSetupError = useAuthStore((s) => s.encryptionSetupError);
+  const isEncryptionReady = useAuthStore((s) => s.isEncryptionReady);
+  const setEncryptionSetupStatus = useAuthStore((s) => s.setEncryptionSetupStatus);
+  const setEncryptionSetupError = useAuthStore((s) => s.setEncryptionSetupError);
+  const resetEncryptionSetup = useAuthStore((s) => s.resetEncryptionSetup);
 
   const { rooms, activeRoomId, setRooms, setActiveRoom, getActiveRoom } = useRoomStore();
   const { messages, addMessage, setMessages, updateMessage, upsertMessage } = useMessageStore();
@@ -92,11 +100,17 @@ export default function Chat() {
         return await encryptMessage(room.id, plaintext, localMessageId);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!message.includes("No session") || room.type !== "direct") throw error;
-        const recipientId = resolveRecipient(room);
-        if (!recipientId) throw new Error("Cannot find the recipient for this direct room");
-        const bundle = await keyService.getBundle(recipientId);
-        return encryptInitialDirectMessage(room.id, plaintext, bundle, localMessageId);
+        if (message.includes("No local identity key")) {
+          throw new Error("Missing local encryption keys");
+        }
+        if (message.includes("No session")) {
+          if (room.type !== "direct") throw error;
+          const recipientId = resolveRecipient(room);
+          if (!recipientId) throw new Error("Cannot find the recipient for this direct room");
+          const bundle = await keyService.getBundle(recipientId);
+          return encryptInitialDirectMessage(room.id, plaintext, bundle, localMessageId);
+        }
+        throw error;
       }
     },
     [resolveRecipient]
@@ -376,9 +390,44 @@ export default function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [roomMessages.length]);
 
+  const ensureEncryptionKeys = useCallback(async () => {
+    if (isEncryptionReady) return;
+
+    setEncryptionSetupStatus("checking");
+    setEncryptionSetupError(null);
+
+    try {
+      console.debug("performing encryption key setup");
+      setEncryptionSetupStatus("generating");
+      await ensureLocalIdentity(async (bundle) => {
+        setEncryptionSetupStatus("uploading");
+        await keyService.uploadBundle(bundle);
+      });
+      setEncryptionSetupStatus("ready");
+    } catch (error) {
+      console.error("encryption setup failed", error);
+      setEncryptionSetupError("Could not set up encryption keys on this browser. Please refresh or try again.");
+      setEncryptionSetupStatus("failed");
+    }
+  }, [ensureLocalIdentity, isEncryptionReady, setEncryptionSetupError, setEncryptionSetupStatus]);
+
+  useEffect(() => {
+    if (!user) return;
+    ensureEncryptionKeys();
+  }, [ensureEncryptionKeys, user]);
+
   const handleSend = useCallback(
     async (text: string, files: File[]) => {
       if (!activeRoom || !user) return;
+      if (!isEncryptionReady) {
+        toast.error(
+          encryptionSetupStatus === "failed"
+            ? "Encryption setup failed. Please retry before sending messages."
+            : "Encryption keys are being prepared. Please wait."
+        );
+        return;
+      }
+
       setIsSending(true);
       try {
         const attachments = await uploadEncryptedAttachments(activeRoom.id, files);
@@ -393,7 +442,7 @@ export default function Chat() {
         setIsSending(false);
       }
     },
-    [activeRoom, sendEnvelope, uploadEncryptedAttachments, user]
+    [activeRoom, encryptionSetupStatus, isEncryptionReady, sendEnvelope, uploadEncryptedAttachments, user]
   );
 
   const openEdit = useCallback((message: Message) => {
@@ -633,6 +682,34 @@ export default function Chat() {
               </div>
             </div>
 
+            {(encryptionSetupStatus !== "ready" || encryptionSetupError) && (
+              <div
+                className={
+                  "mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm shadow-sm " +
+                  (encryptionSetupStatus === "failed"
+                    ? "border-rose bg-rose/10 text-rose"
+                    : "border-amber-200 bg-amber-50 text-amber-900")
+                }
+              >
+                {encryptionSetupStatus === "checking" && "Checking local encryption keys..."}
+                {encryptionSetupStatus === "generating" && "This browser has no local encryption keys. Generating secure encryption keys now..."}
+                {encryptionSetupStatus === "uploading" && "Uploading your public prekey bundle to the server..."}
+                {encryptionSetupStatus === "ready" && "Encryption keys ready. You can now send secure messages."}
+                {encryptionSetupStatus === "failed" && (
+                  <div className="flex flex-col gap-2">
+                    <span>Could not set up encryption keys on this browser. Please refresh or try again.</span>
+                    <button
+                      type="button"
+                      onClick={ensureEncryptionKeys}
+                      className="mt-2 inline-flex items-center justify-center rounded-xl bg-cyan px-3 py-2 text-xs font-semibold text-void hover:bg-cyan/90"
+                    >
+                      Retry setup
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3">
               {loadingMessages ? (
                 <MessageSkeleton />
@@ -662,6 +739,7 @@ export default function Chat() {
               onSend={handleSend}
               onTypingStart={handleTypingStart}
               onTypingStop={handleTypingStop}
+              disabled={!isEncryptionReady}
               busy={isSending}
             />
           </>
@@ -759,9 +837,28 @@ function ModalHeader({ title, onClose }: { title: string; onClose: () => void })
 
 function assertEncryptedPayload(payload: EncryptedMessagePayload): void {
   const record = payload as unknown as Record<string, unknown>;
-  const plaintextFields = ["content", "text", "plaintext", "decrypted", "decryptedText"];
+  const plaintextFields = [
+    "content",
+    "text",
+    "plaintext",
+    "message_text",
+    "decrypted",
+    "decrypted_text",
+    "decryptedText",
+    "private_key",
+    "privateKey",
+    "ratchet_state",
+    "ratchetState",
+    "chain_key",
+    "chainKey",
+    "message_key",
+    "messageKey",
+  ];
   const leakedField = plaintextFields.find((field) => field in record);
-  console.assert(!leakedField, "Outgoing message payload must not contain plaintext fields");
+  console.assert(
+    !leakedField,
+    "Outgoing message payload must not contain plaintext or private key fields"
+  );
 }
 
 function EmptyState({ onNewChat }: { onNewChat: () => void }) {

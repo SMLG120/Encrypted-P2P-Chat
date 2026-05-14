@@ -7,6 +7,24 @@ import { AppError } from "@/lib/errors";
 
 const BASE_URL = "/api/v1";
 
+function errorDetailFromResponse(json: unknown, fallback: string): string {
+  if (!json || typeof json !== "object" || !("detail" in json)) return fallback;
+
+  const detail = (json as { detail: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (item && typeof item === "object" && "msg" in item) {
+          return String((item as { msg: unknown }).msg);
+        }
+        return String(item);
+      })
+      .join(", ");
+  }
+  return fallback;
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -23,7 +41,7 @@ async function request<T>(
     let detail = `HTTP ${res.status}`;
     try {
       const json = await res.json();
-      detail = json.detail || detail;
+      detail = errorDetailFromResponse(json, detail);
     } catch {
       // Keep the HTTP status fallback when the server returns a non-JSON error.
     }
@@ -45,7 +63,7 @@ async function formRequest<T>(path: string, body: FormData): Promise<T> {
     let detail = `HTTP ${res.status}`;
     try {
       const json = await res.json();
-      detail = json.detail || detail;
+      detail = errorDetailFromResponse(json, detail);
     } catch {
       // Keep the HTTP status fallback when the server returns a non-JSON error.
     }

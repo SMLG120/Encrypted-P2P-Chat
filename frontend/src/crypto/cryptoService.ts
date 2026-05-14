@@ -80,6 +80,25 @@ export async function setupIdentity(uploadFn: (bundle: object) => Promise<void>)
   await uploadFn(bundle);
 }
 
+export async function ensureLocalIdentity(
+  uploadFn: (bundle: object) => Promise<void>
+): Promise<void> {
+  console.debug("checking local encryption keys");
+  const identity = await getIdentityKey();
+  if (identity) {
+    console.debug("local encryption keys already present");
+    return;
+  }
+
+  console.debug("local keys missing");
+  console.debug("generating local identity keys");
+  await setupIdentity(async (bundle) => {
+    console.debug("uploading public prekey bundle");
+    await uploadFn(bundle);
+  });
+  console.debug("encryption setup ready");
+}
+
 // ── Session establishment ─────────────────────────────────────────────────────
 
 export interface InitialMessagePayload {
@@ -187,12 +206,17 @@ export async function encryptMessage(
   await storeSession(roomId, serializeRatchetState(newState));
   await storeMessageKey(roomId, messageId, messageKey);
 
+  // Encode header as base64url (not btoa) to match backend expectation
+  const headerJson = JSON.stringify(message.header);
+  const headerBytes = new TextEncoder().encode(headerJson);
+  const encryptedHeaderB64url = bytesToB64url(headerBytes);
+
   return {
     ciphertext: message.ciphertext,
     nonce: message.nonce,
     algorithm: "AES-256-GCM",
     header: message.header,
-    encryptedHeader: btoa(JSON.stringify(message.header)),
+    encryptedHeader: encryptedHeaderB64url,
   };
 }
 
@@ -209,7 +233,10 @@ export async function decryptMessage(
   const stateJson = await getSession(roomId);
   const encodedHeader = msg.encryptedHeader ?? msg.encrypted_header ?? undefined;
   if (!encodedHeader) throw new Error("Missing message header");
-  const decodedHeader = JSON.parse(atob(encodedHeader)) as
+  
+  // Decode base64url header (server sends snake_case)
+  const headerBytes = b64urlToBytes(encodedHeader);
+  const decodedHeader = JSON.parse(new TextDecoder().decode(headerBytes)) as
     | RatchetMessage["header"]
     | {
         kind: "x3dh_initial";
@@ -269,18 +296,21 @@ export async function encryptInitialDirectMessage(
   messageId?: string,
 ): Promise<EncryptedMessage> {
   const { encryptedPayload } = await initiateSession(roomId, plaintext, remoteBundle, messageId);
+  const headerJson = JSON.stringify({
+    kind: "x3dh_initial",
+    ephemeralPublicKey: encryptedPayload.ephemeralPublicKey,
+    identityPublicKey: encryptedPayload.identityPublicKey,
+    usedSPKId: encryptedPayload.usedSPKId,
+    usedOPKId: encryptedPayload.usedOPKId,
+    header: encryptedPayload.firstMessage.header,
+  });
+  const headerBytes = new TextEncoder().encode(headerJson);
+
   return {
     ciphertext: encryptedPayload.firstMessage.ciphertext,
     nonce: encryptedPayload.firstMessage.nonce,
     algorithm: "AES-256-GCM",
-    encryptedHeader: btoa(JSON.stringify({
-      kind: "x3dh_initial",
-      ephemeralPublicKey: encryptedPayload.ephemeralPublicKey,
-      identityPublicKey: encryptedPayload.identityPublicKey,
-      usedSPKId: encryptedPayload.usedSPKId,
-      usedOPKId: encryptedPayload.usedOPKId,
-      header: encryptedPayload.firstMessage.header,
-    })),
+    encryptedHeader: bytesToB64url(headerBytes),
   };
 }
 

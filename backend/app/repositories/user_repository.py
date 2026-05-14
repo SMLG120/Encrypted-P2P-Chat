@@ -34,13 +34,21 @@ class UserRepository:
         result = await self._db.execute(select(User).where(User.username == username))
         return result.scalar_one_or_none()
 
-    async def search(self, query: str, limit: int = 20, offset: int = 0) -> tuple[list[User], int]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 20,
+        offset: int = 0,
+        exclude_user_id: uuid.UUID | None = None,
+    ) -> tuple[list[User], int]:
         from sqlalchemy import func
 
         q = f"%{query.lower()}%"
         stmt = select(User).where(
             (func.lower(User.username).like(q)) | (func.lower(User.display_name).like(q))
         )
+        if exclude_user_id:
+            stmt = stmt.where(User.id != exclude_user_id)
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total = (await self._db.execute(count_stmt)).scalar_one()
         result = await self._db.execute(stmt.offset(offset).limit(limit))
