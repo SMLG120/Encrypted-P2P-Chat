@@ -160,6 +160,27 @@ export async function consumeOneTimePrekey(keyId: number): Promise<{
   return pk ?? null;
 }
 
+export async function getOneTimePrekey(keyId: number): Promise<{
+  keyId: number;
+  publicKey: string;
+  privateKey: Uint8Array;
+} | null> {
+  const db = await getDB();
+  return (await db.get("one_time_prekeys", keyId)) ?? null;
+}
+
+export async function deleteOneTimePrekey(keyId: number): Promise<void> {
+  const db = await getDB();
+  await db.delete("one_time_prekeys", keyId);
+}
+
+export async function getAllOneTimePrekeys(): Promise<
+  Array<{ keyId: number; publicKey: string; privateKey: Uint8Array }>
+> {
+  const db = await getDB();
+  return db.getAll("one_time_prekeys");
+}
+
 export async function countOneTimePrekeys(): Promise<number> {
   const db = await getDB();
   return db.count("one_time_prekeys");

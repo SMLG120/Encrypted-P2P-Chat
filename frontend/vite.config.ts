@@ -4,7 +4,7 @@ import { resolve } from "path";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const apiTarget = env.VITE_DEV_PROXY_TARGET || "http://localhost";
+  const apiTarget = env.VITE_DEV_PROXY_TARGET || "http://localhost:8000";
   const wsTarget = apiTarget.replace(/^http/, "ws");
 
   return {

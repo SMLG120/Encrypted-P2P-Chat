@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -95,6 +95,7 @@ class MessageRepository:
         room_id: uuid.UUID,
         limit: int = 50,
         before_id: uuid.UUID | None = None,
+        recipient_filter_id: uuid.UUID | None = None,
     ) -> tuple[list[Message], bool]:
         stmt = (
             select(Message)
@@ -102,6 +103,13 @@ class MessageRepository:
             .options(selectinload(Message.attachments))
             .order_by(Message.created_at.desc())
         )
+        if recipient_filter_id is not None:
+            stmt = stmt.where(
+                or_(
+                    Message.recipient_id == recipient_filter_id,
+                    Message.recipient_id.is_(None),
+                )
+            )
         if before_id:
             # Cursor pagination
             ref = await self.get_by_id(before_id)

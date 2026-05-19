@@ -27,6 +27,7 @@ class Room(Base):
     type: Mapped[str] = mapped_column(
         Enum("direct", "group", name="room_type"), nullable=False, default="direct"
     )
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

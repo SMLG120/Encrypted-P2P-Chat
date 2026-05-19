@@ -4,8 +4,9 @@
  */
 
 import { AppError } from "@/lib/errors";
+import { config } from "@/config";
 
-const BASE_URL = "/api/v1";
+const BASE_URL = config.apiV1Url;
 
 function errorDetailFromResponse(json: unknown, fallback: string): string {
   if (!json || typeof json !== "object" || !("detail" in json)) return fallback;

@@ -284,6 +284,94 @@ async def test_non_member_cannot_read_messages(client: AsyncClient, db_session: 
 
 
 @pytest.mark.asyncio
+async def test_group_messages_are_per_recipient_ciphertext(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    alice = await create_test_user(db_session, "alice_group_msg")
+    bob = await create_test_user(db_session, "bob_group_msg")
+    carol = await create_test_user(db_session, "carol_group_msg")
+
+    room = (
+        await client.post(
+            "/api/v1/rooms/group",
+            json={"name": "Cipher Group", "member_ids": [str(bob.id), str(carol.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()
+
+    bob_payload = {
+        "recipient_id": str(bob.id),
+        "ciphertext": "Ym9iLWdyb3VwLWNpcGhlcnRleHQ",
+        "encrypted_header": "Ym9iLWdyb3VwLWhlYWRlcg",
+        "nonce": "Ym9iLWdyb3VwLW5vbmNl",
+    }
+    carol_payload = {
+        "recipient_id": str(carol.id),
+        "ciphertext": "Y2Fyb2wtZ3JvdXAtY2lwaGVydGV4dA",
+        "encrypted_header": "Y2Fyb2wtZ3JvdXAtaGVhZGVy",
+        "nonce": "Y2Fyb2wtZ3JvdXAtbm9uY2U",
+    }
+
+    assert (
+        await client.post(
+            f"/api/v1/rooms/{room['id']}/messages",
+            json=bob_payload,
+            cookies=_cookies(alice),
+        )
+    ).status_code == 201
+    assert (
+        await client.post(
+            f"/api/v1/rooms/{room['id']}/messages",
+            json=carol_payload,
+            cookies=_cookies(alice),
+        )
+    ).status_code == 201
+
+    bob_history = await client.get(f"/api/v1/rooms/{room['id']}/messages", cookies=_cookies(bob))
+    carol_history = await client.get(f"/api/v1/rooms/{room['id']}/messages", cookies=_cookies(carol))
+
+    assert [msg["ciphertext"] for msg in bob_history.json()["messages"]] == [bob_payload["ciphertext"]]
+    assert [msg["ciphertext"] for msg in carol_history.json()["messages"]] == [carol_payload["ciphertext"]]
+
+
+@pytest.mark.asyncio
+async def test_group_message_requires_recipient_and_membership(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    alice = await create_test_user(db_session, "alice_group_require")
+    bob = await create_test_user(db_session, "bob_group_require")
+    eve = await create_test_user(db_session, "eve_group_require")
+
+    room = (
+        await client.post(
+            "/api/v1/rooms/group",
+            json={"name": "Private Group", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()
+
+    missing_recipient = await client.post(
+        f"/api/v1/rooms/{room['id']}/messages",
+        json={"ciphertext": "Z3JvdXAtY2lwaGVy", "nonce": "Z3JvdXAtbm9uY2U"},
+        cookies=_cookies(alice),
+    )
+    assert missing_recipient.status_code == 422
+
+    non_member_recipient = await client.post(
+        f"/api/v1/rooms/{room['id']}/messages",
+        json={
+            "recipient_id": str(eve.id),
+            "ciphertext": "Z3JvdXAtY2lwaGVyMg",
+            "nonce": "Z3JvdXAtbm9uY2Uy",
+        },
+        cookies=_cookies(alice),
+    )
+    assert non_member_recipient.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_sender_can_edit_and_delete_own_message(client: AsyncClient, db_session: AsyncSession):
     alice = await create_test_user(db_session, "alice_edit")
     bob = await create_test_user(db_session, "bob_edit")

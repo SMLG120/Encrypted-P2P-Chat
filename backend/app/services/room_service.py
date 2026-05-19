@@ -41,19 +41,25 @@ class RoomService:
         return loaded or room
 
     async def create_group_room(
-        self, creator_id: uuid.UUID, member_ids: list[uuid.UUID]
+        self, creator_id: uuid.UUID, member_ids: list[uuid.UUID], name: str | None = None
     ) -> Room:
-        for uid in member_ids:
+        unique_member_ids = list(dict.fromkeys(member_ids))
+        for uid in unique_member_ids:
             if uid == creator_id:
                 continue
             if not await self._users.get_by_id(uid):
                 raise UserNotFoundError("User not found")
 
-        room = await self._rooms.create(type="group", created_by=creator_id)
+        room = await self._rooms.create(type="group", created_by=creator_id, name=name)
         await self._rooms.add_member(room.id, creator_id, role="owner")
-        for uid in member_ids:
+        for uid in unique_member_ids:
             if uid != creator_id:
                 await self._rooms.add_member(room.id, uid, role="member")
+        log.info(
+            "group_room_created",
+            room_id=str(room.id),
+            member_count=len({creator_id, *unique_member_ids}),
+        )
         loaded = await self._rooms.get_by_id(room.id)
         return loaded or room
 
@@ -72,14 +78,28 @@ class RoomService:
     async def add_member(
         self, room_id: uuid.UUID, requester_id: uuid.UUID, target_user_id: uuid.UUID
     ) -> None:
+        room = await self._rooms.get_by_id(room_id)
+        if not room:
+            raise RoomNotFoundError()
+        if room.type != "group":
+            raise ForbiddenError("Members can only be added to group rooms")
         membership = await self._rooms.get_membership(room_id, requester_id)
         if not membership or membership.role != "owner":
             raise ForbiddenError("Only room owners can add members")
+        if not await self._users.get_by_id(target_user_id):
+            raise UserNotFoundError("User not found")
+        if await self._rooms.get_membership(room_id, target_user_id):
+            return
         await self._rooms.add_member(room_id, target_user_id)
 
     async def remove_member(
         self, room_id: uuid.UUID, requester_id: uuid.UUID, target_user_id: uuid.UUID
     ) -> None:
+        room = await self._rooms.get_by_id(room_id)
+        if not room:
+            raise RoomNotFoundError()
+        if room.type != "group":
+            raise ForbiddenError("Members can only be removed from group rooms")
         membership = await self._rooms.get_membership(room_id, requester_id)
         if not membership:
             raise ForbiddenError("You are not a member of this room")

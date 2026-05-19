@@ -1,58 +1,45 @@
-# 🔐 Crypt — Zero-Knowledge Encrypted P2P Chat
+# Encrypted P2P Chat
 
-A production-grade, end-to-end encrypted real-time messenger built as a portfolio demonstration of modern full-stack security engineering.
+Encrypted P2P Chat is a full-stack end-to-end encrypted messenger built with a FastAPI backend, WebAuthn/passkeys, WebSocket delivery, a TypeScript React frontend, client-side X3DH, Double Ratchet, WebCrypto, IndexedDB key storage, and ciphertext-only backend persistence.
 
-> **⚠️ Portfolio Disclaimer:** This application follows Signal-protocol cryptographic design but has **not been independently audited**. Do not use for communications where your safety depends on it. For that, use Signal or another audited messenger.
+This is an educational/portfolio implementation. The design follows Signal-style concepts, but it has not been independently audited. Do not use it for communications where safety depends on audited cryptography.
 
----
+## Tech Stack
 
-## ✨ Features
+- Frontend: TypeScript, React, Vite, Tailwind CSS, Zustand, WebCrypto, IndexedDB, `@noble/curves`
+- Backend: Python 3.12, FastAPI, SQLAlchemy async, Alembic, py_webauthn, Redis, PostgreSQL
+- Realtime: WebSocket relay for encrypted messages, typing, presence, delivery/read receipts
+- Crypto: X25519 identity keys, Ed25519 signed prekeys, X3DH, Double Ratchet, AES-256-GCM
 
-| Feature | Implementation |
-|---------|---------------|
-| **Passkey auth** | WebAuthn / FIDO2 (no passwords stored) |
-| **E2EE** | X3DH key agreement + Double Ratchet per-message keys |
-| **Key types** | X25519 DH, Ed25519 signing, AES-256-GCM encryption |
-| **Forward secrecy** | One-time prekeys consumed atomically; ratchet advances every message |
-| **P2P transport** | WebRTC DataChannels when both users online |
-| **Relay fallback** | WebSocket relay with the same E2EE layer |
-| **Offline delivery** | Ciphertext stored server-side, delivered on reconnect |
-| **Presence** | Real-time online/offline via WebSocket |
-| **Typing indicators** | Ephemeral, room-scoped |
-| **Read receipts** | Per-message, synced via WebSocket |
-| **Zero-knowledge server** | Server stores ciphertext, public keys, metadata — never plaintext |
-| **Private key storage** | IndexedDB only — never sent to server |
+## Security Model
 
----
+The backend may store and relay:
 
-## 🚀 Quick Start
+- `ciphertext`
+- `nonce`
+- `encrypted_header`
+- `sender_id`
+- `recipient_id`
+- `room_id`
+- delivery metadata and timestamps
+- public X3DH key material
 
-### Docker
+The backend must never receive:
 
-```bash
-# 1. Clone
-git clone https://github.com/yourname/encrypted-p2p-chat
-cd encrypted-p2p-chat
+- plaintext message content
+- private keys
+- ratchet state
+- root keys, chain keys, or message keys
+- WebAuthn raw secrets or cookies in logs
 
-# 2. Configure from the project-root template
-cp .env.example .env
-# Edit .env — at minimum set SECRET_KEY
+Private encryption keys live only in the browser IndexedDB key store. Decryption happens only in the browser.
 
-# 3. Start Docker Desktop, then launch
-docker compose up --build
+## Local Development Setup
 
-# App available at http://localhost
-```
-
-If Docker reports that it cannot connect to `docker.sock`, Docker Desktop/the Docker daemon is not running yet.
-
-### Local Development
-
-The backend must run on Python 3.12. Do not reuse a virtualenv created with Python 3.13 or 3.14.
+Install dependencies:
 
 ```bash
 brew install python@3.12
-rm -rf .venv
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
@@ -63,172 +50,276 @@ npm ci
 cd ..
 ```
 
-Run the dependency services with Docker, then start the app processes locally:
+Start dependencies:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d postgres redis
+```
 
+Start the backend:
+
+```bash
 cd backend
 ../.venv/bin/python -m uvicorn app.main:app --reload --port 8000
+```
 
-cd ../frontend
+Start the frontend:
+
+```bash
+cd frontend
 npm run dev
 ```
 
----
+Open the app at `http://localhost:5173`.
 
-## 🏗 Architecture
+## Environment Variables
 
-```
-Browser (TypeScript + React)
-├── crypto/        X3DH, Double Ratchet, AES-256-GCM, IndexedDB key store
-├── services/      API client, WebSocket client, auth
-├── stores/        Zustand: rooms, messages, presence, UI
-└── pages/         Landing, Login, Register, Chat, SecurityModel
+Backend local dev:
 
-Nginx (reverse proxy + rate limiting + security headers)
-│
-├── /api/v1/*   → FastAPI (Python 3.12)
-│                  ├── WebAuthn auth (py_webauthn)
-│                  ├── Key bundle management (X3DH public material)
-│                  ├── Room & membership management
-│                  ├── Message storage (ciphertext only)
-│                  └── WebSocket (presence, signaling, relay)
-│
-├── PostgreSQL   users, credentials, keys, rooms, messages (ciphertext)
-└── Redis        sessions, WebAuthn challenges, presence TTL, rate limits
+```env
+API_BACKEND_URL=http://localhost:8000
+RP_ID=localhost
+RP_ORIGIN=http://localhost:5173
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost
+SESSION_COOKIE_SECURE=false
+SESSION_COOKIE_SAMESITE=lax
 ```
 
----
+Frontend local dev:
 
-## 🔑 Cryptographic Design
-
-### Key Hierarchy
-```
-Identity Key (IK)     X25519 — long-term DH key
-Signing Key (SK_ed)   Ed25519 — signs prekeys
-Signed Prekey (SPK)   X25519 — medium-term (7-day rotation)
-One-Time Prekey (OPK) X25519 — single-use, consumed atomically
-Ephemeral Key (EK)    X25519 — generated per session initiation
+```env
+VITE_API_URL=http://localhost:8000
+VITE_WS_URL=ws://localhost:8000/ws
+VITE_FRONTEND_ORIGIN=http://localhost:5173
+VITE_DEV_PROXY_TARGET=http://localhost:8000
 ```
 
-### X3DH Session Initiation
-```
-Alice                        Server                     Bob
-  |                            |                          |
-  |── fetch Bob's bundle ──────>|                          |
-  |<─ IKb, SPKb, OPKb ─────────|                          |
-  |                            |                          |
-  |  DH1 = DH(IKa, SPKb)      |                          |
-  |  DH2 = DH(EKa, IKb)       |                          |
-  |  DH3 = DH(EKa, SPKb)      |                          |
-  |  DH4 = DH(EKa, OPKb)      |                          |
-  |  SK = HKDF(DH1||DH2||DH3||DH4)                       |
-  |                            |                          |
-  |── ciphertext + EKa pub ───>|── stored ───────────────>|
-```
+Legacy backend variable names are still accepted for compatibility:
 
-### Double Ratchet (per-message)
-- Symmetric ratchet: each message derives a fresh AES-256-GCM key
-- DH ratchet: new X25519 key pair on each reply, providing break-in recovery
-- Skipped message keys stored locally for out-of-order delivery
+- `WEBAUTHN_RP_ID`
+- `WEBAUTHN_ORIGIN`
+- `ALLOWED_ORIGINS`
+- `COOKIE_SECURE`
+- `COOKIE_SAMESITE`
 
----
+## localhost vs localhost:5173
 
-## 📡 API Overview
+`localhost` is the relying party ID for passkeys. It is a host name only and must not include a scheme or port.
 
-```
-POST /api/v1/auth/register/options   Get WebAuthn registration challenge
-POST /api/v1/auth/register/verify    Verify registration, create user + session
-POST /api/v1/auth/login/options      Get WebAuthn authentication challenge  
-POST /api/v1/auth/login/verify       Verify assertion, set session cookie
-POST /api/v1/auth/logout             Clear session
-GET  /api/v1/auth/me                 Current user info
+`http://localhost:5173` is the frontend browser origin. WebAuthn origin checks require the scheme and port.
 
-POST /api/v1/keys/upload             Upload public key bundle (post-registration)
-GET  /api/v1/keys/bundle/:userId     Fetch key bundle for X3DH (consumes OPK)
-GET  /api/v1/keys/status             Check local key health
-POST /api/v1/keys/replenish          Upload more one-time prekeys
+`http://localhost:8000` is the FastAPI backend URL when running locally without nginx.
 
-GET  /api/v1/users/search?q=         Search users
-GET  /api/v1/users/:userId           Get user profile
+Common local setup:
 
-POST /api/v1/rooms                   Create/get direct room
-GET  /api/v1/rooms                   List your rooms
-GET  /api/v1/rooms/:id               Room details + members
+- Frontend: `http://localhost:5173`
+- Backend API: `http://localhost:8000/api/v1`
+- Backend WebSocket: `ws://localhost:8000/ws`
+- RP ID: `localhost`
+- RP origin: `http://localhost:5173`
 
-GET  /api/v1/rooms/:id/messages      Paginated message history (ciphertext)
-POST /api/v1/rooms/:id/messages      Send encrypted message
-PATCH /api/v1/messages/:id/read      Mark as read
+Do not mix `localhost` and `127.0.0.1` during passkey testing. Browsers treat them as different WebAuthn relying parties.
 
-WS   /ws                             Real-time: messages, typing, presence, WebRTC
+## Passkey/WebAuthn Setup
+
+For Vite local dev, use:
+
+```env
+RP_ID=localhost
+RP_ORIGIN=http://localhost:5173
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost
+SESSION_COOKIE_SECURE=false
+SESSION_COOKIE_SAMESITE=lax
 ```
 
----
+Common errors:
 
-## 🛡 Security Model
+- `RP_ID=localhost:5173`: invalid, because RP ID cannot include a port.
+- `RP_ORIGIN=localhost`: invalid, because origin must include scheme.
+- Secure cookie on plain HTTP: the browser will not send the session cookie.
+- CORS origin mismatch: requests may succeed without cookies or fail preflight.
 
-See [SECURITY.md](./SECURITY.md) for the full threat model.
+To debug cookies and CORS:
 
-**TL;DR — The server can see:**
-- Who has an account
-- Who talks to whom (room membership)
-- Message timestamps and sizes
-- Ciphertext (cannot decrypt)
-- Public key material
+1. In DevTools, check Application > Cookies for `localhost`.
+2. Confirm the `session` cookie is set after login/register.
+3. Confirm HTTP requests include credentials.
+4. Confirm WebSocket frames connect to `ws://localhost:8000/ws`.
+5. Confirm backend CORS includes the exact frontend origin.
 
-**The server cannot see:**
-- Message content (end-to-end encrypted)
-- Private keys (generated and stored on-device only)
+## Encryption/Decryption Pipeline
 
----
+Sender:
 
-## 🧪 Running Tests
+1. User types plaintext.
+2. Browser checks local identity keys in IndexedDB.
+3. If no ratchet session exists for the room and peer, browser fetches the peer prekey bundle.
+4. Browser verifies the signed prekey.
+5. Browser runs X3DH.
+6. Browser initializes Double Ratchet sender state.
+7. Browser encrypts plaintext locally.
+8. Browser sends only ciphertext, nonce, encrypted header, recipient, room, and metadata.
+
+Backend:
+
+1. Authenticates the WebSocket or HTTP request via session cookie.
+2. Validates room membership.
+3. Stores ciphertext only.
+4. Relays encrypted payloads unchanged to the intended recipient.
+5. Never decrypts message content.
+
+Recipient:
+
+1. Browser receives an encrypted message event.
+2. Browser derives the correct peer id from `sender_id` or `recipient_id`.
+3. Browser loads local identity, signed prekey, one-time prekey, and ratchet state from IndexedDB.
+4. If no session exists, browser uses the X3DH initial header to initialize receiver state.
+5. Browser decrypts with Double Ratchet.
+6. Browser saves updated ratchet state.
+7. Browser displays plaintext locally.
+
+## Message Delivery Pipeline
+
+Direct messages use one encrypted payload addressed to the other member. The sender also receives its own WebSocket echo so the optimistic temporary message can be replaced with the stored message id.
+
+Group messages use MVP pairwise encryption. One ciphertext row is stored per recipient. The backend routes each row only to that row's `recipient_id`, and group message history returns only the current user's recipient rows.
+
+## Common Decryption Failure Causes
+
+- Browser IndexedDB has no local identity private key.
+- Local signed prekey or one-time prekey private key is missing.
+- Server has stale one-time prekeys from an older browser-local key reset.
+- Sender initial message is missing the X3DH header.
+- Sender and recipient use different session keys for the same room/peer pair.
+- Header JSON is encoded twice or decoded as the wrong base64 variant.
+- Nonce or ciphertext uses base64 instead of base64url.
+- Ratchet state is stored under `room_id` on one side and peer id on the other.
+- Backend broadcasts a group recipient payload to the wrong member.
+- Recipient receives a message before local key setup completes.
+- Local WebAuthn/session cookie is not sent to the backend or WebSocket.
+
+Safe debug logs are intentionally limited to stages such as key presence, prekey fetch, X3DH initialization, ratchet state load/save, and decrypt failure stage. They must not include plaintext, private keys, chain keys, message keys, root keys, raw credentials, cookies, or full ciphertext.
+
+## Group Chat Design
+
+MVP group chat uses pairwise encryption per recipient:
+
+1. Alice writes one plaintext group message.
+2. The browser encrypts that plaintext separately for Alice, Bob, Carol, and every other member.
+3. The backend stores one ciphertext row per recipient.
+4. The backend validates membership for create, add, leave, read, and send.
+5. Each recipient only receives the row addressed to them.
+
+This is simple and preserves the ciphertext-only backend rule. It is less efficient than Sender Keys because a group with `N` members stores `N` encrypted payloads per message.
+
+Future roadmap: add Sender Keys for efficient group encryption after the MVP is stable.
+
+## How to Test with Two Clients
+
+1. Start PostgreSQL and Redis.
+2. Start FastAPI on `http://localhost:8000`.
+3. Start Vite on `http://localhost:5173`.
+4. Open Alice in a normal browser window.
+5. Open Bob in incognito or a second browser profile.
+6. Register or log in both users.
+7. Confirm both browsers complete local encryption key setup.
+8. Alice creates a direct chat with Bob.
+9. Alice sends a direct message.
+10. Bob should see decrypted plaintext.
+11. Bob replies.
+12. Alice should see decrypted plaintext.
+13. Refresh both pages.
+14. Confirm message history decrypts again.
+15. Create a group with Alice, Bob, and a third user.
+16. Send a group message.
+17. Confirm every member sees decrypted plaintext.
+18. Confirm a non-member cannot fetch the group or group messages.
+
+## How to Inspect WebSocket Frames
+
+1. Open DevTools > Network.
+2. Filter by `WS`.
+3. Select `/ws`.
+4. Inspect Frames.
+5. Valid encrypted message frames contain ciphertext fields only.
+6. There should be no `text`, `content`, `plaintext`, `privateKey`, `ratchetState`, `chainKey`, or `messageKey` fields.
+
+## How to Verify Ciphertext-Only Storage
+
+Run backend tests:
 
 ```bash
-# Backend
-source .venv/bin/activate
-cd backend
-python -m pytest app/tests/ -v --cov=app
-
-# Frontend (unit)
-cd frontend
-npm ci
-npm test
-
-# E2E (requires running app)
-npm run test:e2e
+.venv/bin/pytest backend/app/tests
 ```
 
----
+Manual database check:
 
-## 🧯 Troubleshooting
+```sql
+select id, room_id, sender_id, recipient_id, ciphertext, encrypted_header, nonce
+from messages
+order by created_at desc
+limit 10;
+```
 
-| Symptom | Fix |
-|---------|-----|
-| `asyncpg` or `pydantic-core` fails while building wheels on Python 3.14 | Recreate `.venv` with Python 3.12 using the local setup commands above. |
-| `cp backend/.env.example .env` fails | Use `cp .env.example .env`; the template lives at the project root. |
-| `npm ci` says a lockfile is required | `frontend/package-lock.json` must exist. If dependencies change, run `cd frontend && npm install --package-lock-only`. |
-| Compose cannot connect to `docker.sock` | Start Docker Desktop/the Docker daemon, then rerun `docker compose up --build`. |
-| Backend returns HTTP 500 and logs `socket.gaierror` for `postgres` or `redis` | Docker has stale containers attached to an old Compose network. Run `make docker-repair-networks`, or run `docker compose up -d --force-recreate postgres redis && docker compose up -d migrate backend nginx`. This preserves volumes while reconnecting services to the current network. |
-| Passkey verification fails in local dev | `WEBAUTHN_ORIGIN` must exactly match the browser origin. Use `http://localhost:5173` for Vite dev, `http://localhost` for Docker/nginx, and do not mix `localhost` with `127.0.0.1`. |
+The `messages` table should contain encoded ciphertext and metadata only.
 
----
+## Running Tests
 
-## 📦 Tech Stack
+Backend:
 
-**Frontend:** TypeScript · React 18 · Vite · Tailwind CSS · Zustand · Framer Motion · @noble/curves · WebCrypto · IndexedDB
+```bash
+.venv/bin/pytest backend/app/tests
+```
 
-**Backend:** Python 3.12 · FastAPI · SQLAlchemy 2 (async) · Alembic · py_webauthn · structlog · slowapi
+Frontend:
 
-**Infrastructure:** PostgreSQL 16 · Redis 7 · Nginx · Docker Compose
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
 
----
+## Troubleshooting Guide
 
-## 📄 Resume Highlights
+`Decryption failed` on the first message:
 
-- Built a **zero-knowledge encrypted P2P chat platform** using FastAPI, TypeScript, WebAuthn/passkeys, WebRTC, and Signal-protocol E2EE (X3DH + Double Ratchet + AES-256-GCM)
-- Designed a **client-side cryptographic key lifecycle** with X25519 identity keys, Ed25519 signatures, signed prekeys with 7-day rotation, single-use one-time prekeys with atomic SQL consumption, and IndexedDB private key storage — server stores only public material and ciphertext
-- Implemented **real-time infrastructure** with WebSocket signaling, WebRTC DataChannel P2P transport, typing indicators, online presence tracking, read/delivery receipts, and Redis-backed session and rate-limit management  
-- Containerized a **full-stack secure messaging system** with PostgreSQL, Redis, Nginx reverse proxy, Docker Compose, Alembic async migrations, structured logging with secret scrubbing, and a documented threat model
-# Encrypted-P2P-Chat
+- Confirm recipient IndexedDB has identity, signed prekey, and one-time prekeys.
+- Confirm sender's encrypted header has `kind: "x3dh_initial"`.
+- Confirm backend `/keys/upload` was called after the current browser generated keys.
+- Clear stale local data only if you are willing to lose local private keys and undecryptable history.
+
+Passkey fails locally:
+
+- Use `RP_ID=localhost`.
+- Use `RP_ORIGIN=http://localhost:5173`.
+- Use the same host in the browser, backend env, and frontend env.
+- Use `SESSION_COOKIE_SECURE=false` on plain HTTP.
+
+WebSocket connects but messages do not arrive:
+
+- Confirm the WebSocket URL is `ws://localhost:8000/ws`.
+- Confirm the `session` cookie exists for `localhost`.
+- Confirm the user is a member of the room.
+- Confirm group rows have the intended `recipient_id`.
+
+Messages decrypt before refresh but not after refresh:
+
+- Confirm ratchet state is saved under the room plus peer session key.
+- Confirm message key aliases are saved when temporary client ids are replaced by backend ids.
+- Confirm logout did not clear IndexedDB keys.
+
+## Known Limitations
+
+- Crypto implementation is educational and unaudited.
+- Multi-device encrypted sync is not implemented.
+- Group chat uses pairwise per-recipient encryption, so large groups are inefficient.
+- If a browser loses IndexedDB private keys, old messages may be undecryptable.
+- Attachments are encrypted client-side but use the same local-key availability constraints as messages.
+
+## Future Roadmap
+
+- Sender Keys protocol for efficient group encryption
+- Multi-device key sync and device lists
+- Encrypted file sharing improvements
+- Signed prekey rotation UI and OPK replenishment UX
+- Stronger audit logging around ciphertext-only invariants

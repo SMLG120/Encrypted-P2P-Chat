@@ -13,6 +13,12 @@ from app.schemas.auth import UserResponse
 
 class RoomCreate(BaseModel):
     type: Literal["direct", "group"] = "direct"
+    name: str | None = Field(None, min_length=1, max_length=128)
+    member_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=50)
+
+
+class GroupRoomCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
     member_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=50)
 
 
@@ -28,6 +34,7 @@ class MembershipResponse(BaseModel):
 class RoomResponse(BaseModel):
     id: uuid.UUID
     type: str
+    name: str | None = None
     created_by: uuid.UUID | None
     created_at: datetime
     members: list[MembershipResponse] = Field(

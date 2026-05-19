@@ -1,5 +1,5 @@
 import { clsx } from "clsx";
-import { Lock } from "lucide-react";
+import { Lock, Users } from "lucide-react";
 import { usePresenceStore } from "@/stores/presenceStore";
 import type { Room } from "@/types/chat";
 import type { User } from "@/types/auth";
@@ -33,7 +33,7 @@ export function ConversationList({ rooms, activeRoomId, currentUser, onSelect }:
         const name =
           room.type === "direct"
             ? other?.user?.display_name ?? "Unknown"
-            : `Group · ${room.members.length}`;
+            : room.name || "Group";
         const isOnline = other ? presence[other.user_id] === "online" : false;
         const isActive = room.id === activeRoomId;
 
@@ -58,7 +58,7 @@ export function ConversationList({ rooms, activeRoomId, currentUser, onSelect }:
                     : "bg-border text-text-secondary border border-border"
                 )}
               >
-                {name[0]?.toUpperCase()}
+                {room.type === "group" ? <Users size={14} /> : name[0]?.toUpperCase()}
               </div>
               {room.type === "direct" && (
                 <span
@@ -77,7 +77,7 @@ export function ConversationList({ rooms, activeRoomId, currentUser, onSelect }:
                 <Lock size={10} className={isActive ? "text-emerald flex-shrink-0" : "text-text-muted flex-shrink-0"} />
               </div>
               <p className="text-xs text-text-muted truncate font-mono">
-                {isOnline ? "online" : "offline"}
+                {room.type === "group" ? `${room.members.length} members` : isOnline ? "online" : "offline"}
               </p>
             </div>
           </button>

@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.identity_key import IdentityKey
@@ -104,6 +104,17 @@ class KeyRepository:
         self._db.add_all(objs)
         await self._db.flush()
         return len(objs)
+
+    async def delete_unused_one_time_prekeys(self, user_id: uuid.UUID) -> int:
+        """Remove unserved OPKs for a user before replacing their public bundle."""
+        result = await self._db.execute(
+            delete(OneTimePrekey).where(
+                OneTimePrekey.user_id == user_id,
+                OneTimePrekey.is_used == False,
+            )
+        )
+        await self._db.flush()
+        return int(result.rowcount or 0)
 
     async def consume_one_time_prekey(self, user_id: uuid.UUID) -> OneTimePrekey | None:
         """

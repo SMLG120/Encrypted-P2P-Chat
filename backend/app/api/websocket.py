@@ -160,12 +160,13 @@ async def websocket_endpoint(
                         await db.commit()
                         response = message_service.to_response(saved)
                         event = message_event("encrypted_message", response, client_message_id)
-                        member_ids = await message_service.room_member_ids(room_id)
-                        recipient_ids = [uid for uid in member_ids if uid != user.id]
-                        sent_count = await ws_manager.broadcast_to_users(recipient_ids, event)
-                        await ws_manager.send_to_user(user.id, event)
-                        if sent_count > 0 and recipient_ids:
-                            await message_service.mark_delivered(saved.id, recipient_ids[0])
+                        target_ids = await message_service.event_target_ids(saved)
+                        delivery_targets = [uid for uid in target_ids if uid != user.id]
+                        sent_count = await ws_manager.broadcast_to_users(delivery_targets, event)
+                        if user.id in target_ids:
+                            await ws_manager.send_to_user(user.id, event)
+                        if sent_count > 0 and delivery_targets:
+                            await message_service.mark_delivered(saved.id, delivery_targets[0])
                             await db.commit()
                             await ws_manager.send_to_user(
                                 user.id,

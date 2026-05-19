@@ -2,6 +2,7 @@
 export interface Room {
   id: string;
   type: "direct" | "group";
+  name?: string | null;
   created_by: string | null;
   created_at: string;
   members: Membership[];

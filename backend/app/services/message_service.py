@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -108,6 +109,8 @@ class MessageService:
                 raise ForbiddenError("Recipient is not a member of this room")
         elif room.type == "direct":
             recipient_id = next((uid for uid in member_ids if uid != sender_id), None)
+        elif room.type == "group":
+            raise ValidationError("Group messages require a per-recipient encrypted payload")
 
         attachments = await self._messages.get_attachments_by_ids(payload.attachment_ids)
         if len(attachments) != len(set(payload.attachment_ids)):
@@ -166,13 +169,31 @@ class MessageService:
         if not membership:
             raise ForbiddenError("You are not a member of this room")
 
-        msgs, has_more = await self._messages.get_room_messages(room_id, limit, before_id)
+        room = await self._rooms.get_by_id(room_id)
+        recipient_filter_id = user_id if room and room.type == "group" else None
+        msgs, has_more = await self._messages.get_room_messages(
+            room_id,
+            limit,
+            before_id,
+            recipient_filter_id=recipient_filter_id,
+        )
         chronological = list(reversed(msgs))
         return MessageListResponse(
             messages=[self.to_response(m) for m in chronological],
             total=len(chronological),
             has_more=has_more,
         )
+
+    async def event_target_ids(self, msg: Message | Any) -> list[uuid.UUID]:
+        """Return the users who should receive a stored encrypted payload event."""
+        room = await self._rooms.get_by_id(msg.room_id)
+        if not room:
+            return []
+        if msg.recipient_id:
+            if room.type == "direct" and msg.recipient_id != msg.sender_id:
+                return list(dict.fromkeys([msg.recipient_id, msg.sender_id]))
+            return [msg.recipient_id]
+        return [m.user_id for m in room.memberships]
 
     async def edit_message(
         self,

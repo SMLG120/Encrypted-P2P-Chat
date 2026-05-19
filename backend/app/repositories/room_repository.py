@@ -16,8 +16,13 @@ class RoomRepository:
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
 
-    async def create(self, type: str, created_by: uuid.UUID) -> Room:
-        room = Room(type=type, created_by=created_by)
+    async def create(
+        self,
+        type: str,
+        created_by: uuid.UUID,
+        name: str | None = None,
+    ) -> Room:
+        room = Room(type=type, created_by=created_by, name=name)
         self._db.add(room)
         await self._db.flush()
         return room

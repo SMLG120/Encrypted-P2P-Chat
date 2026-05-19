@@ -9,7 +9,7 @@ import secrets
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import PostgresDsn, field_validator
+from pydantic import AliasChoices, Field, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,19 +26,32 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: Literal["development", "staging", "production"] = "development"
     DEBUG: bool = False
+    API_BACKEND_URL: str = "http://localhost:8000"
 
     # ── Security ──────────────────────────────────────────────────────────
     SECRET_KEY: str = secrets.token_urlsafe(64)
     SESSION_COOKIE_NAME: str = "session"
     SESSION_MAX_AGE: int = 60 * 60 * 24 * 7  # 7 days
-    COOKIE_SECURE: bool = True
-    COOKIE_SAMESITE: str = "strict"
+    COOKIE_SECURE: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SESSION_COOKIE_SECURE", "COOKIE_SECURE"),
+    )
+    COOKIE_SAMESITE: str = Field(
+        default="lax",
+        validation_alias=AliasChoices("SESSION_COOKIE_SAMESITE", "COOKIE_SAMESITE"),
+    )
 
     # ── WebAuthn ──────────────────────────────────────────────────────────
-    WEBAUTHN_RP_ID: str = "localhost"
+    WEBAUTHN_RP_ID: str = Field(
+        default="localhost",
+        validation_alias=AliasChoices("RP_ID", "WEBAUTHN_RP_ID"),
+    )
     WEBAUTHN_RP_NAME: str = "Encrypted P2P Chat"
     # Default to the Vite dev origin. Docker/production override this via env.
-    WEBAUTHN_ORIGIN: list[str] | str = ["http://localhost", "http://localhost:5173"]
+    WEBAUTHN_ORIGIN: list[str] | str = Field(
+        default=["http://localhost:5173", "http://localhost"],
+        validation_alias=AliasChoices("RP_ORIGIN", "WEBAUTHN_ORIGIN"),
+    )
     WEBAUTHN_CHALLENGE_TTL: int = 300  # seconds
 
     # ── Database ──────────────────────────────────────────────────────────
@@ -55,7 +68,10 @@ class Settings(BaseSettings):
     REDIS_RATE_LIMIT_DB: int = 2
 
     # ── CORS ──────────────────────────────────────────────────────────────
-    ALLOWED_ORIGINS: list[str] | str = ["http://localhost", "http://localhost:5173"]
+    ALLOWED_ORIGINS: list[str] | str = Field(
+        default=["http://localhost:5173", "http://localhost"],
+        validation_alias=AliasChoices("CORS_ALLOWED_ORIGINS", "ALLOWED_ORIGINS"),
+    )
 
     # ── Rate Limiting ─────────────────────────────────────────────────────
     RATE_LIMIT_AUTH: str = "10/minute"

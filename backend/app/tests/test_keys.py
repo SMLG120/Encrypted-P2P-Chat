@@ -79,3 +79,50 @@ async def test_key_bundle_fetch(client: AsyncClient, db_session: AsyncSession):
     resp2 = await client.get(f"/api/v1/keys/bundle/{bob.id}", cookies=alice_cookies)
     assert resp2.status_code == 200
     assert resp2.json()["one_time_prekey"] is None
+
+
+@pytest.mark.asyncio
+async def test_reupload_replaces_stale_unused_one_time_prekeys(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    alice = await create_test_user(db_session, "alice_stale_opk")
+    bob = await create_test_user(db_session, "bob_stale_opk")
+    bob_cookies = {__import__("app.core.config", fromlist=["settings"]).settings.SESSION_COOKIE_NAME: make_session_cookie(bob.id)}
+    alice_cookies = {__import__("app.core.config", fromlist=["settings"]).settings.SESSION_COOKIE_NAME: make_session_cookie(alice.id)}
+
+    first_bundle = {
+        "identity": {
+            "identity_public_key": "old-identity-public",
+            "signing_public_key": "old-signing-public",
+        },
+        "signed_prekey": {
+            "key_id": 1,
+            "public_key": "old-signed-prekey-public",
+            "signature": "old-signature",
+        },
+        "one_time_prekeys": [{"key_id": 1, "public_key": "old-opk-public"}],
+    }
+    second_bundle = {
+        "identity": {
+            "identity_public_key": "new-identity-public",
+            "signing_public_key": "new-signing-public",
+        },
+        "signed_prekey": {
+            "key_id": 1,
+            "public_key": "new-signed-prekey-public",
+            "signature": "new-signature",
+        },
+        "one_time_prekeys": [{"key_id": 1, "public_key": "new-opk-public"}],
+    }
+
+    assert (await client.post("/api/v1/keys/upload", json=first_bundle, cookies=bob_cookies)).status_code == 201
+    assert (await client.post("/api/v1/keys/upload", json=second_bundle, cookies=bob_cookies)).status_code == 201
+
+    fetched = await client.get(f"/api/v1/keys/bundle/{bob.id}", cookies=alice_cookies)
+
+    assert fetched.status_code == 200
+    data = fetched.json()
+    assert data["identity_public_key"] == "new-identity-public"
+    assert data["signed_prekey"]["public_key"] == "new-signed-prekey-public"
+    assert data["one_time_prekey"]["public_key"] == "new-opk-public"

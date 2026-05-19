@@ -10,6 +10,7 @@ import {
   generateSignedPrekey,
   generateOneTimePrekeys,
   buildKeyBundleUpload,
+  verifySignedPrekey,
 } from "./identity";
 import {
   x3dhInitiate,
@@ -30,7 +31,9 @@ import {
   storeSignedPrekey,
   getSignedPrekey,
   storeOneTimePrekeys,
-  consumeOneTimePrekey,
+  getOneTimePrekey,
+  deleteOneTimePrekey,
+  getAllOneTimePrekeys,
   storeSession,
   getSession,
   storeMessageKey,
@@ -100,18 +103,48 @@ export async function ensureLocalIdentity(
   uploadFn: (bundle: object) => Promise<void>,
   options: LocalIdentitySetupOptions = {},
 ): Promise<LocalIdentitySetupResult> {
-  console.debug("checking local encryption keys");
+  console.debug("checking local identity keys");
   options.onStatus?.("checking");
 
   const identity = await getIdentityKey();
   if (identity) {
+    console.debug("local identity keys found");
+    const existingBundle = await buildExistingKeyBundleUpload();
+    if (existingBundle) {
+      console.debug("uploading public prekey bundle");
+      options.onStatus?.("uploading");
+      await uploadFn(existingBundle);
+    }
     console.debug("encryption setup ready");
     return "existing";
   }
 
-  console.debug("local keys missing");
+  console.debug("local identity keys missing");
   await setupIdentity(uploadFn, options);
   return "created";
+}
+
+async function buildExistingKeyBundleUpload(): Promise<object | null> {
+  const identity = await getIdentityKey();
+  const signedPrekey = await getSignedPrekey(1);
+  if (!identity || !signedPrekey) return null;
+
+  const oneTimePrekeys = await getAllOneTimePrekeys();
+  return {
+    identity: {
+      identity_public_key: identity.dhPublicKey,
+      signing_public_key: identity.signingPublicKey,
+    },
+    signed_prekey: {
+      key_id: signedPrekey.keyId,
+      public_key: signedPrekey.publicKey,
+      signature: signedPrekey.signature,
+    },
+    one_time_prekeys: oneTimePrekeys.map((prekey) => ({
+      key_id: prekey.keyId,
+      public_key: prekey.publicKey,
+    })),
+  };
 }
 
 // ── Session establishment ─────────────────────────────────────────────────────
@@ -133,11 +166,16 @@ export async function initiateSession(
   plaintext: string,
   remoteBundle: KeyBundle,
   messageId?: string,
+  peerId?: string,
 ): Promise<{ encryptedPayload: InitialMessagePayload; ratchetStateJson: string }> {
   const identity = await getIdentityKey();
   if (!identity) throw new Error("No local identity key — run setupIdentity first");
+  if (!verifySignedPrekey(remoteBundle.signingPublicKey, remoteBundle.signedPrekey)) {
+    throw new Error("Remote signed prekey verification failed");
+  }
 
   // X3DH
+  console.debug("initializing X3DH session");
   const x3dhResult = await x3dhInitiate(identity.dhPrivateKey, remoteBundle);
 
   // Use remote's signed prekey public as initial ratchet key
@@ -149,8 +187,10 @@ export async function initiateSession(
 
   // Persist ratchet state
   const stateJson = serializeRatchetState(newState);
-  await storeSession(roomId, stateJson);
-  await storeMessageKey(roomId, messageId, messageKey);
+  const sessionId = sessionStorageKey(roomId, peerId ?? remoteBundle.userId);
+  console.debug("saving ratchet state for peer_id");
+  await storeSession(sessionId, stateJson);
+  await storeMessageKey(sessionId, messageId, messageKey);
 
   return {
     encryptedPayload: {
@@ -171,19 +211,30 @@ export async function receiveSession(
   roomId: string,
   payload: InitialMessagePayload,
   messageId?: string,
+  peerId?: string,
 ): Promise<string> {
+  console.debug("checking local identity keys");
   const identity = await getIdentityKey();
-  if (!identity) throw new Error("No local identity key");
+  if (!identity) {
+    console.debug("local identity keys missing");
+    throw new Error("No local identity key");
+  }
+  console.debug("local identity keys found");
 
   const spk = await getSignedPrekey(payload.usedSPKId);
   if (!spk) throw new Error(`Signed prekey ${payload.usedSPKId} not found`);
 
   let opkPrivKey: Uint8Array | undefined;
+  let opkKeyIdToDelete: number | undefined;
   if (payload.usedOPKId !== undefined) {
-    const opk = await consumeOneTimePrekey(payload.usedOPKId);
-    if (opk) opkPrivKey = opk.privateKey;
+    const opk = await getOneTimePrekey(payload.usedOPKId);
+    if (opk) {
+      opkPrivKey = opk.privateKey;
+      opkKeyIdToDelete = opk.keyId;
+    }
   }
 
+  console.debug("initializing X3DH session");
   const sharedSecret = await x3dhRespond(
     identity.dhPrivateKey,
     spk.privateKey,
@@ -201,8 +252,14 @@ export async function receiveSession(
   // Decrypt the first message
   const { plaintext, newState, messageKey } = await ratchetDecrypt(ratchetState, payload.firstMessage);
 
-  await storeSession(roomId, serializeRatchetState(newState));
-  await storeMessageKey(roomId, messageId, messageKey);
+  if (opkKeyIdToDelete !== undefined) {
+    await deleteOneTimePrekey(opkKeyIdToDelete);
+  }
+
+  const sessionId = sessionStorageKey(roomId, peerId);
+  console.debug("saving ratchet state for peer_id");
+  await storeSession(sessionId, serializeRatchetState(newState));
+  await storeMessageKey(sessionId, messageId, messageKey);
   return plaintext;
 }
 
@@ -212,19 +269,24 @@ export async function encryptMessage(
   roomId: string,
   plaintext: string,
   messageId?: string,
+  peerId?: string,
 ): Promise<EncryptedMessage & { header: RatchetMessage["header"] }> {
-  const stateJson = await getSession(roomId);
+  const sessionId = await resolveExistingSessionKey(roomId, peerId);
+  console.debug("loading ratchet state for peer_id");
+  const stateJson = await getSession(sessionId);
   if (!stateJson) throw new Error(`No session for room ${roomId}`);
 
   const state = deserializeRatchetState(stateJson);
   const { message, newState, messageKey } = await ratchetEncrypt(state, plaintext);
-  await storeSession(roomId, serializeRatchetState(newState));
-  await storeMessageKey(roomId, messageId, messageKey);
+  console.debug("saving ratchet state for peer_id");
+  await storeSession(sessionId, serializeRatchetState(newState));
+  await storeMessageKey(sessionId, messageId, messageKey);
 
   // Encode header as base64url (not btoa) to match backend expectation
   const headerJson = JSON.stringify(message.header);
   const headerBytes = new TextEncoder().encode(headerJson);
   const encryptedHeaderB64url = bytesToB64url(headerBytes);
+  console.debug("encrypting message with header fields");
 
   return {
     ciphertext: message.ciphertext,
@@ -239,19 +301,23 @@ export async function decryptMessage(
   roomId: string,
   msg: {
     id?: string;
+    sender_id?: string;
+    recipient_id?: string | null;
     ciphertext: string;
     nonce: string;
     encryptedHeader?: string;
     encrypted_header?: string | null;
-  }
+  },
+  peerId?: string,
 ): Promise<string> {
-  const stateJson = await getSession(roomId);
+  const sessionId = await resolveExistingSessionKey(roomId, peerId);
+  console.debug("loading ratchet state for peer_id");
+  const stateJson = await getSession(sessionId);
   const encodedHeader = msg.encryptedHeader ?? msg.encrypted_header ?? undefined;
   if (!encodedHeader) throw new Error("Missing message header");
   
   // Decode base64url header (server sends snake_case)
-  const headerBytes = b64urlToBytes(encodedHeader);
-  const decodedHeader = JSON.parse(new TextDecoder().decode(headerBytes)) as
+  let decodedHeader:
     | RatchetMessage["header"]
     | {
         kind: "x3dh_initial";
@@ -261,9 +327,17 @@ export async function decryptMessage(
         usedOPKId?: number;
         header: RatchetMessage["header"];
       };
+  try {
+    const headerBytes = b64urlToBytes(encodedHeader);
+    decodedHeader = JSON.parse(new TextDecoder().decode(headerBytes));
+  } catch (error) {
+    console.debug("decryption failed at stage: header");
+    throw error;
+  }
 
   if (!stateJson) {
     if ("kind" in decodedHeader && decodedHeader.kind === "x3dh_initial") {
+      console.debug("attempting decrypt with peer_id");
       return receiveSession(roomId, {
         ephemeralPublicKey: decodedHeader.ephemeralPublicKey,
         identityPublicKey: decodedHeader.identityPublicKey,
@@ -274,32 +348,37 @@ export async function decryptMessage(
           ciphertext: msg.ciphertext,
           nonce: msg.nonce,
         },
-      }, msg.id);
+      }, msg.id, peerId);
     }
+    console.debug("decryption failed at stage: session");
     throw new Error(`No session for room ${roomId}`);
   }
 
   if ("kind" in decodedHeader) {
-    const cached = await decryptWithCachedMessageKey(roomId, msg);
+    const cached = await decryptWithCachedMessageKey(sessionId, msg);
     if (cached !== null) return cached;
+    console.debug("decryption failed at stage: session");
     throw new Error("Unable to decrypt historical initial message on this device");
   }
   const header = decodedHeader;
 
   const state = deserializeRatchetState(stateJson);
   try {
+    console.debug("attempting decrypt with peer_id");
     const { plaintext, newState, messageKey } = await ratchetDecrypt(state, {
       header,
       ciphertext: msg.ciphertext,
       nonce: msg.nonce,
     });
 
-    await storeSession(roomId, serializeRatchetState(newState));
-    await storeMessageKey(roomId, msg.id, messageKey);
+    console.debug("saving ratchet state for peer_id");
+    await storeSession(sessionId, serializeRatchetState(newState));
+    await storeMessageKey(sessionId, msg.id, messageKey);
     return plaintext;
   } catch (error) {
-    const cached = await decryptWithCachedMessageKey(roomId, msg);
+    const cached = await decryptWithCachedMessageKey(sessionId, msg);
     if (cached !== null) return cached;
+    console.debug("decryption failed at stage: aes-gcm");
     throw error;
   }
 }
@@ -309,8 +388,15 @@ export async function encryptInitialDirectMessage(
   plaintext: string,
   remoteBundle: KeyBundle,
   messageId?: string,
+  peerId?: string,
 ): Promise<EncryptedMessage> {
-  const { encryptedPayload } = await initiateSession(roomId, plaintext, remoteBundle, messageId);
+  const { encryptedPayload } = await initiateSession(
+    roomId,
+    plaintext,
+    remoteBundle,
+    messageId,
+    peerId ?? remoteBundle.userId,
+  );
   const headerJson = JSON.stringify({
     kind: "x3dh_initial",
     ephemeralPublicKey: encryptedPayload.ephemeralPublicKey,
@@ -333,18 +419,61 @@ export async function rememberMessageKeyAlias(
   roomId: string,
   fromMessageId: string | undefined,
   toMessageId: string | undefined,
+  peerId?: string,
 ): Promise<void> {
-  await copyMessageKey(roomId, fromMessageId, toMessageId);
+  const sessionId = await resolveExistingSessionKey(roomId, peerId);
+  await copyMessageKey(sessionId, fromMessageId, toMessageId);
+}
+
+export async function decryptGroupMessagePayloads<T extends {
+  id?: string;
+  room_id: string;
+  sender_id?: string;
+  recipient_id?: string | null;
+  ciphertext: string;
+  nonce: string;
+  encrypted_header?: string | null;
+}>(
+  messages: T[],
+  currentUserId: string,
+): Promise<Array<T & { plaintext?: string; decryptionFailed?: boolean }>> {
+  return Promise.all(
+    messages.map(async (message) => {
+      const peerId =
+        message.sender_id === currentUserId
+          ? message.recipient_id ?? currentUserId
+          : message.sender_id;
+      try {
+        return {
+          ...message,
+          plaintext: await decryptMessage(message.room_id, message, peerId),
+        };
+      } catch {
+        return { ...message, decryptionFailed: true };
+      }
+    }),
+  );
 }
 
 async function decryptWithCachedMessageKey(
-  roomId: string,
+  sessionId: string,
   msg: { id?: string; ciphertext: string; nonce: string },
 ): Promise<string | null> {
-  const cachedKey = await getMessageKey(roomId, msg.id);
+  const cachedKey = await getMessageKey(sessionId, msg.id);
   if (!cachedKey) return null;
   const key = await rawToAESKey(cachedKey);
   return aesDecrypt(key, msg.ciphertext, msg.nonce);
+}
+
+function sessionStorageKey(roomId: string, peerId?: string): string {
+  return peerId ? `${roomId}:${peerId}` : roomId;
+}
+
+async function resolveExistingSessionKey(roomId: string, peerId?: string): Promise<string> {
+  const scoped = sessionStorageKey(roomId, peerId);
+  if (scoped !== roomId && (await getSession(scoped))) return scoped;
+  if (await getSession(roomId)) return roomId;
+  return scoped;
 }
 
 // ── Serialization ─────────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@
  */
 
 import type { WSMessage } from "@/types/websocket";
+import { config } from "@/config";
 
 type Handler = (msg: WSMessage) => void;
 
@@ -20,8 +21,7 @@ class WebSocketService {
     if (this.ws?.readyState === WebSocket.OPEN) return;
     this.shouldReconnect = true;
 
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    this.ws = new WebSocket(`${protocol}//${location.host}/ws`);
+    this.ws = new WebSocket(config.wsUrl);
 
     this.ws.onopen = () => {
       this.reconnectDelay = 1000;

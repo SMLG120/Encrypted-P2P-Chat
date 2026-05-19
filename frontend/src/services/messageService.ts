@@ -20,6 +20,14 @@ export const messageService = {
     return api.post(`/rooms/${roomId}/messages`, payload);
   },
 
+  sendGroupMessage(roomId: string, payload: EncryptedMessagePayload): Promise<Message> {
+    return api.post(`/rooms/${roomId}/messages`, payload);
+  },
+
+  fetchGroupMessages(roomId: string): Promise<{ messages: Message[]; total: number; has_more: boolean }> {
+    return api.get(`/rooms/${roomId}/messages?limit=50`);
+  },
+
   edit(messageId: string, payload: EncryptedMessagePayload): Promise<Message> {
     return api.patch(`/messages/${messageId}`, payload);
   },

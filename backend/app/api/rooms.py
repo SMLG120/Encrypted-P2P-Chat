@@ -8,7 +8,7 @@ from app.core.dependencies import CurrentUser, DbDep
 from app.core.exceptions import ForbiddenError
 from app.repositories.room_repository import RoomRepository
 from app.repositories.user_repository import UserRepository
-from app.schemas.room import AddMemberRequest, RoomCreate, RoomResponse
+from app.schemas.room import AddMemberRequest, GroupRoomCreate, RoomCreate, RoomResponse
 from app.services.room_service import RoomService
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -29,7 +29,17 @@ async def create_room(
             raise ForbiddenError("Direct rooms require exactly one other member")
         room = await svc.create_or_get_direct_room(current_user.id, body.member_ids[0])
     else:
-        room = await svc.create_group_room(current_user.id, body.member_ids)
+        room = await svc.create_group_room(current_user.id, body.member_ids, body.name)
+    return RoomResponse.model_validate(room)
+
+
+@router.post("/group", status_code=201)
+async def create_group_room(
+    body: GroupRoomCreate,
+    current_user: CurrentUser,
+    svc: RoomService = Depends(_get_room_service),
+) -> RoomResponse:
+    room = await svc.create_group_room(current_user.id, body.member_ids, body.name)
     return RoomResponse.model_validate(room)
 
 

@@ -52,6 +52,27 @@ async def _broadcast_room_event(
     return await ws_manager.broadcast_to_users(member_ids, payload, exclude=exclude)
 
 
+async def _broadcast_message_event(
+    svc: MessageService,
+    msg: MessageResponse,
+    payload: dict,
+    sender_id: uuid.UUID,
+) -> int:
+    from app.core.websocket_manager import ws_manager
+
+    class _MessageRef:
+        room_id = msg.room_id
+        sender_id = msg.sender_id
+        recipient_id = msg.recipient_id
+
+    target_ids = await svc.event_target_ids(_MessageRef())
+    recipient_targets = [uid for uid in target_ids if uid != sender_id]
+    sent_count = await ws_manager.broadcast_to_users(recipient_targets, payload)
+    if sender_id in target_ids:
+        await ws_manager.send_to_user(sender_id, payload)
+    return sent_count
+
+
 async def _send_delivery_receipt(
     svc: MessageService,
     msg: MessageResponse,
@@ -101,11 +122,11 @@ async def send_message(
     msg = await svc.send_message(room_id, current_user.id, body)
     response = svc.to_response(msg)
 
-    sent_count = await _broadcast_room_event(
+    sent_count = await _broadcast_message_event(
         svc,
-        room_id,
+        response,
         _message_event("encrypted_message", response, body.client_message_id),
-        exclude=current_user.id,
+        current_user.id,
     )
     await _send_delivery_receipt(svc, response, current_user.id, sent_count)
 
@@ -121,7 +142,12 @@ async def edit_message(
 ) -> MessageResponse:
     msg = await svc.edit_message(message_id, current_user.id, body)
     response = svc.to_response(msg)
-    await _broadcast_room_event(svc, msg.room_id, _message_event("message_edited", response))
+    await _broadcast_message_event(
+        svc,
+        response,
+        _message_event("message_edited", response),
+        current_user.id,
+    )
     return response
 
 
@@ -133,7 +159,12 @@ async def delete_message(
 ) -> MessageResponse:
     msg = await svc.delete_message(message_id, current_user.id)
     response = svc.to_response(msg)
-    await _broadcast_room_event(svc, msg.room_id, _message_event("message_deleted", response))
+    await _broadcast_message_event(
+        svc,
+        response,
+        _message_event("message_deleted", response),
+        current_user.id,
+    )
     return response
 
 
@@ -146,10 +177,11 @@ async def forward_message(
 ) -> MessageResponse:
     msg = await svc.forward_message(message_id, current_user.id, body)
     response = svc.to_response(msg)
-    await _broadcast_room_event(
+    await _broadcast_message_event(
         svc,
-        msg.room_id,
+        response,
         _message_event("message_forwarded", response, body.client_message_id),
+        current_user.id,
     )
     return response
 

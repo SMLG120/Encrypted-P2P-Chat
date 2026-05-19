@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, ChevronLeft, Loader2, LogOut, Plus, Shield, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronLeft, Loader2, LogOut, Plus, Shield, Users, X } from "lucide-react";
 import { clsx } from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
@@ -38,8 +38,12 @@ import { ConversationList } from "@/components/chat/ConversationList";
 import { DeleteMessageDialog } from "@/components/chat/DeleteMessageDialog";
 import { EditMessageInput } from "@/components/chat/EditMessageInput";
 import { ForwardMessageModal } from "@/components/chat/ForwardMessageModal";
+import { AddMemberModal } from "@/components/chat/AddMemberModal";
+import { GroupChatHeader } from "@/components/chat/GroupChatHeader";
+import { GroupMemberList } from "@/components/chat/GroupMemberList";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { MessageInput } from "@/components/chat/MessageInput";
+import { NewGroupModal } from "@/components/chat/NewGroupModal";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
 import { UserSearch } from "@/components/chat/UserSearch";
 import { SecurityBadge } from "@/components/security/SecurityBadge";
@@ -68,11 +72,14 @@ export default function Chat() {
   const setEncryptionSetupError = useAuthStore((s) => s.setEncryptionSetupError);
 
   const { rooms, activeRoomId, setRooms, setActiveRoom, getActiveRoom } = useRoomStore();
-  const { messages, addMessage, setMessages, updateMessage, upsertMessage } = useMessageStore();
+  const { messages, setMessages, updateMessage, upsertMessage } = useMessageStore();
   const { setPresence, setTyping } = usePresenceStore();
   const { setConnectionStatus, sidebarOpen, setSidebarOpen } = useUIStore();
 
   const [showSearch, setShowSearch] = useState(false);
+  const [showNewGroup, setShowNewGroup] = useState(false);
+  const [showAddMember, setShowAddMember] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
@@ -95,21 +102,30 @@ export default function Chat() {
     [user]
   );
 
-  const encryptForRoom = useCallback(
-    async (room: Room, plaintext: string, localMessageId?: string) => {
+  const peerIdForMessage = useCallback(
+    (message: Message): string | undefined => {
+      if (!user) return undefined;
+      if (message.sender_id === user.id) return message.recipient_id ?? user.id;
+      return message.sender_id;
+    },
+    [user]
+  );
+
+  const encryptForPeer = useCallback(
+    async (room: Room, plaintext: string, peerId?: string, localMessageId?: string) => {
+      const targetPeerId = peerId ?? resolveRecipient(room);
+      if (!targetPeerId) throw new Error("Cannot find the recipient for this room");
       try {
-        return await encryptMessage(room.id, plaintext, localMessageId);
+        return await encryptMessage(room.id, plaintext, localMessageId, targetPeerId);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("No local identity key")) {
           throw new Error("Missing local encryption keys");
         }
         if (message.includes("No session")) {
-          if (room.type !== "direct") throw error;
-          const recipientId = resolveRecipient(room);
-          if (!recipientId) throw new Error("Cannot find the recipient for this direct room");
-          const bundle = await keyService.getBundle(recipientId);
-          return encryptInitialDirectMessage(room.id, plaintext, bundle, localMessageId);
+          console.debug("fetching prekey bundle");
+          const bundle = await keyService.getBundle(targetPeerId);
+          return encryptInitialDirectMessage(room.id, plaintext, bundle, localMessageId, targetPeerId);
         }
         throw error;
       }
@@ -119,12 +135,14 @@ export default function Chat() {
 
   const decryptForDisplay = useCallback(async (message: Message): Promise<Message> => {
     if (message.is_deleted) return message;
+    const peerId = peerIdForMessage(message);
     try {
-      return { ...message, decryptedText: await decryptMessage(message.room_id, message) };
+      console.debug("attempting decrypt with peer_id");
+      return { ...message, decryptedText: await decryptMessage(message.room_id, message, peerId) };
     } catch {
       return { ...message, decryptionFailed: true };
     }
-  }, []);
+  }, [peerIdForMessage]);
 
   const uploadEncryptedAttachments = useCallback(
     async (roomId: string, files: File[]): Promise<ClientAttachmentRef[]> => {
@@ -190,7 +208,7 @@ export default function Chat() {
         id: tempId,
         room_id: room.id,
         sender_id: user.id,
-        recipient_id: resolveRecipient(room),
+        recipient_id: room.type === "group" ? user.id : resolveRecipient(room),
         ciphertext: existingMessage?.ciphertext ?? "",
         encrypted_header: existingMessage?.encrypted_header,
         nonce: existingMessage?.nonce ?? "",
@@ -205,10 +223,44 @@ export default function Chat() {
       upsertMessage(room.id, optimistic, existingMessage?.id);
 
       try {
-        const encrypted = await encryptForRoom(room, plaintext, tempId);
+        if (room.type === "group") {
+          const memberIds = room.members.map((member) => member.user_id);
+          for (const memberId of memberIds) {
+            const clientMessageId = memberId === user.id ? tempId : `${tempId}:${memberId}`;
+            const encrypted = await encryptForPeer(room, plaintext, memberId, clientMessageId);
+            const payload: EncryptedMessagePayload = {
+              client_message_id: clientMessageId,
+              recipient_id: memberId,
+              ciphertext: encrypted.ciphertext,
+              encrypted_header: encrypted.encryptedHeader,
+              nonce: encrypted.nonce,
+              algorithm: encrypted.algorithm,
+              attachment_ids: envelope.attachments.map((attachment) => attachment.id),
+            };
+            assertEncryptedPayload(payload);
+
+            const sentOverWs = wsService.send({
+              type: "encrypted_message",
+              room_id: room.id,
+              ...payload,
+            });
+
+            if (!sentOverWs) {
+              const saved = await messageService.sendGroupMessage(room.id, payload);
+              if (memberId === user.id) {
+                await rememberMessageKeyAlias(room.id, clientMessageId, saved.id, memberId);
+                upsertMessage(room.id, { ...saved, decryptedText: plaintext, delivery_status: "sent" }, tempId);
+              }
+            }
+          }
+          return;
+        }
+
+        const recipientId = resolveRecipient(room);
+        const encrypted = await encryptForPeer(room, plaintext, recipientId, tempId);
         const payload: EncryptedMessagePayload = {
           client_message_id: tempId,
-          recipient_id: resolveRecipient(room),
+          recipient_id: recipientId,
           ciphertext: encrypted.ciphertext,
           encrypted_header: encrypted.encryptedHeader,
           nonce: encrypted.nonce,
@@ -225,7 +277,7 @@ export default function Chat() {
 
         if (!sentOverWs) {
           const saved = await messageService.send(room.id, payload);
-          await rememberMessageKeyAlias(room.id, tempId, saved.id);
+          await rememberMessageKeyAlias(room.id, tempId, saved.id, recipientId);
           upsertMessage(room.id, { ...saved, decryptedText: plaintext, delivery_status: "sent" }, tempId);
         }
       } catch (error) {
@@ -233,7 +285,7 @@ export default function Chat() {
         throw error;
       }
     },
-    [encryptForRoom, resolveRecipient, updateMessage, upsertMessage, user]
+    [encryptForPeer, resolveRecipient, updateMessage, upsertMessage, user]
   );
 
   const applyIncomingMessage = useCallback(
@@ -260,11 +312,13 @@ export default function Chat() {
         attachments: event.attachments as Message["attachments"],
       };
 
+      console.debug("recipient received encrypted message");
+      const peerId = peerIdForMessage(message);
       const existing = useMessageStore.getState().messages[event.room_id]?.find(
         (item) => item.id === event.client_message_id || item.id === event.message_id
       );
       if (event.client_message_id) {
-        await rememberMessageKeyAlias(event.room_id, event.client_message_id, event.message_id);
+        await rememberMessageKeyAlias(event.room_id, event.client_message_id, event.message_id, peerId);
       }
       const display =
         existing?.decryptedText && existing.sender_id === user?.id
@@ -280,7 +334,7 @@ export default function Chat() {
         messageService.markRead(event.message_id).catch(() => {});
       }
     },
-    [activeRoomId, decryptForDisplay, upsertMessage, user?.id]
+    [activeRoomId, decryptForDisplay, peerIdForMessage, upsertMessage, user?.id]
   );
 
   const handleWsMessage = useCallback(
@@ -503,7 +557,8 @@ export default function Chat() {
         existingEnvelope.forwarded
       );
       const plaintext = encodeMessageEnvelope(envelope);
-      const encrypted = await encryptForRoom(room, plaintext, editingMessage.id);
+      const peerId = peerIdForMessage(editingMessage);
+      const encrypted = await encryptForPeer(room, plaintext, peerId, editingMessage.id);
       const editPayload: EncryptedMessagePayload = {
         recipient_id: editingMessage.recipient_id,
         ciphertext: encrypted.ciphertext,
@@ -525,7 +580,7 @@ export default function Chat() {
       upsertMessage(room.id, previous, editingMessage.id);
       toast.error(error instanceof Error ? error.message : "Could not edit message");
     }
-  }, [editText, editingMessage, encryptForRoom, rooms, updateMessage, upsertMessage]);
+  }, [editText, editingMessage, encryptForPeer, peerIdForMessage, rooms, updateMessage, upsertMessage]);
 
   const confirmDeleteMessage = useCallback(
     async (message: Message) => {
@@ -556,51 +611,18 @@ export default function Chat() {
         const sourceEnvelope = decodeMessageEnvelope(forwardingMessage.decryptedText);
         const attachments = await cloneAttachmentsForRoom(targetRoomId, sourceEnvelope.attachments);
         const envelope = createMessageEnvelope(sourceEnvelope.text, attachments, true);
-        const plaintext = encodeMessageEnvelope(envelope);
         const tempId = `temp-${Date.now()}`;
-        const encrypted = await encryptForRoom(targetRoom, plaintext, tempId);
-        const optimistic: Message = {
-          id: tempId,
-          room_id: targetRoom.id,
-          sender_id: user.id,
-          recipient_id: resolveRecipient(targetRoom),
-          ciphertext: "",
-          nonce: "",
-          algorithm: "AES-256-GCM",
-          transport: "stored",
-          delivery_status: "sending",
-          forwarded_from_message_id: forwardingMessage.id,
-          is_deleted: false,
-          created_at: new Date().toISOString(),
-          decryptedText: plaintext,
-        };
-        addMessage(targetRoom.id, optimistic);
-        const forwardPayload: EncryptedMessagePayload = {
-          client_message_id: tempId,
-          recipient_id: resolveRecipient(targetRoom),
-          ciphertext: encrypted.ciphertext,
-          encrypted_header: encrypted.encryptedHeader,
-          nonce: encrypted.nonce,
-          algorithm: encrypted.algorithm,
-          attachment_ids: attachments.map((attachment) => attachment.id),
-        };
-        assertEncryptedPayload(forwardPayload);
-        const saved = await messageService.forward(forwardingMessage.id, targetRoom.id, forwardPayload);
-        await rememberMessageKeyAlias(targetRoom.id, tempId, saved.id);
-        upsertMessage(targetRoom.id, { ...saved, decryptedText: plaintext }, tempId);
+        await sendEnvelope(targetRoom, envelope, tempId);
         setForwardingMessage(null);
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Could not forward message");
       }
     },
     [
-      addMessage,
       cloneAttachmentsForRoom,
-      encryptForRoom,
       forwardingMessage,
-      resolveRecipient,
       rooms,
-      upsertMessage,
+      sendEnvelope,
       user,
     ]
   );
@@ -633,6 +655,40 @@ export default function Chat() {
     navigate("/login");
   }, [setUser, navigate]);
 
+  const replaceRoom = useCallback(
+    (room: Room) => {
+      const currentRooms = useRoomStore.getState().rooms;
+      setRooms(currentRooms.map((item) => (item.id === room.id ? room : item)));
+    },
+    [setRooms],
+  );
+
+  const removeGroupMember = useCallback(
+    async (userId: string) => {
+      if (!activeRoom || activeRoom.type !== "group") return;
+      try {
+        await roomService.removeGroupMember(activeRoom.id, userId);
+        replaceRoom(await roomService.get(activeRoom.id));
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not remove member");
+      }
+    },
+    [activeRoom, replaceRoom],
+  );
+
+  const leaveGroup = useCallback(async () => {
+    if (!activeRoom || activeRoom.type !== "group" || !user) return;
+    try {
+      await roomService.leaveGroup(activeRoom.id, user.id);
+      const nextRooms = useRoomStore.getState().rooms.filter((room) => room.id !== activeRoom.id);
+      setRooms(nextRooms);
+      setActiveRoom(nextRooms[0]?.id ?? null);
+      setShowMembers(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not leave group");
+    }
+  }, [activeRoom, setActiveRoom, setRooms, user]);
+
   const typingState = usePresenceStore((s) => s.typing);
   const typingInRoom = activeRoomId ? [...(typingState[activeRoomId] ?? [])] : [];
   const typingNames = typingInRoom
@@ -659,13 +715,22 @@ export default function Chat() {
                 </div>
                 <span className="font-display font-semibold text-sm text-text-primary">Crypt</span>
               </div>
-              <button
-                onClick={() => setShowSearch(true)}
-                title="New conversation"
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-text-muted hover:text-cyan hover:bg-cyan/10 transition-all"
-              >
-                <Plus size={15} />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowSearch(true)}
+                  title="New direct conversation"
+                  className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-cyan hover:bg-cyan/10 transition-all"
+                >
+                  <Plus size={15} />
+                </button>
+                <button
+                  onClick={() => setShowNewGroup(true)}
+                  title="New group"
+                  className="w-7 h-7 rounded-md flex items-center justify-center text-text-muted hover:text-cyan hover:bg-cyan/10 transition-all"
+                >
+                  <Users size={15} />
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
@@ -718,7 +783,15 @@ export default function Chat() {
                 <ChevronLeft size={18} />
               </button>
               <div className="flex-1">
-                <ChatHeader room={activeRoom} currentUser={user} />
+                {activeRoom.type === "group" ? (
+                  <GroupChatHeader
+                    room={activeRoom}
+                    onAddMember={() => setShowAddMember(true)}
+                    onShowMembers={() => setShowMembers(true)}
+                  />
+                ) : (
+                  <ChatHeader room={activeRoom} currentUser={user} />
+                )}
               </div>
             </div>
 
@@ -776,6 +849,36 @@ export default function Chat() {
                 setActiveRoom(id);
                 setShowSearch(false);
               }}
+            />
+          </ModalShell>
+        )}
+        {showNewGroup && (
+          <ModalShell onClose={() => setShowNewGroup(false)}>
+            <NewGroupModal
+              onClose={() => setShowNewGroup(false)}
+              onRoomCreated={(id) => {
+                setActiveRoom(id);
+                setShowNewGroup(false);
+              }}
+            />
+          </ModalShell>
+        )}
+        {showAddMember && activeRoom?.type === "group" && (
+          <ModalShell onClose={() => setShowAddMember(false)}>
+            <AddMemberModal
+              room={activeRoom}
+              onClose={() => setShowAddMember(false)}
+              onMemberAdded={replaceRoom}
+            />
+          </ModalShell>
+        )}
+        {showMembers && activeRoom?.type === "group" && (
+          <ModalShell onClose={() => setShowMembers(false)}>
+            <GroupMemberList
+              room={activeRoom}
+              currentUser={user}
+              onRemoveMember={removeGroupMember}
+              onLeaveGroup={leaveGroup}
             />
           </ModalShell>
         )}

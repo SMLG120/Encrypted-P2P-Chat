@@ -26,6 +26,11 @@ class KeyService:
 
     async def upload_bundle(self, user_id: uuid.UUID, bundle: KeyBundleUpload) -> None:
         """Store public key bundle after registration."""
+        existing_identity = await self._keys.get_identity_key(user_id)
+        identity_changed = (
+            existing_identity is not None
+            and existing_identity.identity_public_key != bundle.identity.identity_public_key
+        )
         await self._keys.upsert_identity_key(
             user_id=user_id,
             identity_public_key=bundle.identity.identity_public_key,
@@ -41,11 +46,17 @@ class KeyService:
             signature=bundle.signed_prekey.signature,
             expires_at=expires_at,
         )
+        removed_opks = await self._keys.delete_unused_one_time_prekeys(user_id)
         await self._keys.add_one_time_prekeys(
             user_id=user_id,
             prekeys=[{"key_id": k.key_id, "public_key": k.public_key} for k in bundle.one_time_prekeys],
         )
-        log.info("key_bundle_uploaded", user_id=str(user_id))
+        log.info(
+            "key_bundle_uploaded",
+            user_id=str(user_id),
+            identity_changed=identity_changed,
+            replaced_unused_one_time_prekeys=removed_opks,
+        )
 
     async def get_key_bundle(self, target_user_id: uuid.UUID) -> KeyBundleResponse:
         """Fetch a key bundle for X3DH session initiation."""
