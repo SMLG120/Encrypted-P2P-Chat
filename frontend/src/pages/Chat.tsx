@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, LogOut, Plus, Shield, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronLeft, Loader2, LogOut, Plus, Shield, X } from "lucide-react";
+import { clsx } from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
 
-import { useAuthStore } from "@/stores/authStore";
+import { useAuthStore, type EncryptionSetupStatus } from "@/stores/authStore";
 import { useMessageStore } from "@/stores/messageStore";
 import { usePresenceStore, useUIStore } from "@/stores/presenceStore";
 import { useRoomStore } from "@/stores/roomStore";
@@ -22,7 +23,6 @@ import {
   encryptMessage,
   ensureLocalIdentity,
   rememberMessageKeyAlias,
-  setupIdentity,
 } from "@/crypto/cryptoService";
 import { encryptAttachmentFile } from "@/lib/attachmentCrypto";
 import {
@@ -66,7 +66,6 @@ export default function Chat() {
   const isEncryptionReady = useAuthStore((s) => s.isEncryptionReady);
   const setEncryptionSetupStatus = useAuthStore((s) => s.setEncryptionSetupStatus);
   const setEncryptionSetupError = useAuthStore((s) => s.setEncryptionSetupError);
-  const resetEncryptionSetup = useAuthStore((s) => s.resetEncryptionSetup);
 
   const { rooms, activeRoomId, setRooms, setActiveRoom, getActiveRoom } = useRoomStore();
   const { messages, addMessage, setMessages, updateMessage, upsertMessage } = useMessageStore();
@@ -80,8 +79,10 @@ export default function Chat() {
   const [deletingMessage, setDeletingMessage] = useState<Message | null>(null);
   const [editText, setEditText] = useState("");
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [showEncryptionReadyBanner, setShowEncryptionReadyBanner] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const typingTimerRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const encryptionSetupPromiseRef = useRef<Promise<boolean> | null>(null);
 
   const activeRoom = getActiveRoom();
   const roomMessages = activeRoomId ? (messages[activeRoomId] ?? []) : [];
@@ -390,59 +391,98 @@ export default function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [roomMessages.length]);
 
-  const ensureEncryptionKeys = useCallback(async () => {
-    if (isEncryptionReady) return;
+  const ensureEncryptionKeys = useCallback(
+    async (options: { force?: boolean; showReady?: boolean } = {}) => {
+      if (!options.force && useAuthStore.getState().isEncryptionReady) return true;
+      if (encryptionSetupPromiseRef.current) return encryptionSetupPromiseRef.current;
 
-    setEncryptionSetupStatus("checking");
-    setEncryptionSetupError(null);
+      const setupPromise = (async () => {
+        setShowEncryptionReadyBanner(false);
+        setEncryptionSetupError(null);
 
-    try {
-      console.debug("performing encryption key setup");
-      setEncryptionSetupStatus("generating");
-      await ensureLocalIdentity(async (bundle) => {
-        setEncryptionSetupStatus("uploading");
-        await keyService.uploadBundle(bundle);
-      });
-      setEncryptionSetupStatus("ready");
-    } catch (error) {
-      console.error("encryption setup failed", error);
-      setEncryptionSetupError("Could not set up encryption keys on this browser. Please refresh or try again.");
-      setEncryptionSetupStatus("failed");
-    }
-  }, [ensureLocalIdentity, isEncryptionReady, setEncryptionSetupError, setEncryptionSetupStatus]);
+        try {
+          const result = await ensureLocalIdentity((bundle) => keyService.uploadBundle(bundle), {
+            onStatus: setEncryptionSetupStatus,
+          });
+          setEncryptionSetupStatus("ready");
+
+          if (result === "created" || options.showReady) {
+            setShowEncryptionReadyBanner(true);
+            toast.success("Encryption keys ready. You can now send secure messages.");
+          }
+          return true;
+        } catch {
+          console.debug("encryption setup failed");
+          setEncryptionSetupError("Could not set up encryption keys on this browser. Please refresh or try again.");
+          setEncryptionSetupStatus("failed");
+          return false;
+        } finally {
+          encryptionSetupPromiseRef.current = null;
+        }
+      })();
+
+      encryptionSetupPromiseRef.current = setupPromise;
+      return setupPromise;
+    },
+    [setEncryptionSetupError, setEncryptionSetupStatus]
+  );
 
   useEffect(() => {
     if (!user) return;
-    ensureEncryptionKeys();
+    void ensureEncryptionKeys();
   }, [ensureEncryptionKeys, user]);
+
+  useEffect(() => {
+    if (!showEncryptionReadyBanner) return;
+    const timer = setTimeout(() => setShowEncryptionReadyBanner(false), 5000);
+    return () => clearTimeout(timer);
+  }, [showEncryptionReadyBanner]);
 
   const handleSend = useCallback(
     async (text: string, files: File[]) => {
       if (!activeRoom || !user) return;
       if (!isEncryptionReady) {
-        toast.error(
-          encryptionSetupStatus === "failed"
-            ? "Encryption setup failed. Please retry before sending messages."
-            : "Encryption keys are being prepared. Please wait."
-        );
-        return;
+        const ready = await ensureEncryptionKeys({ force: true, showReady: true });
+        if (!ready) {
+          toast.error(
+            encryptionSetupStatus === "failed"
+              ? "Encryption setup failed. Please retry before sending messages."
+              : "Encryption keys are being prepared. Please wait."
+          );
+          return false;
+        }
       }
 
       setIsSending(true);
+      const tempId = `temp-${Date.now()}`;
       try {
         const attachments = await uploadEncryptedAttachments(activeRoom.id, files);
-        await sendEnvelope(
-          activeRoom,
-          createMessageEnvelope(text, attachments),
-          `temp-${Date.now()}`
-        );
+        const envelope = createMessageEnvelope(text, attachments);
+        try {
+          await sendEnvelope(activeRoom, envelope, tempId);
+        } catch (error) {
+          if (!isMissingLocalEncryptionKeysError(error)) throw error;
+          const ready = await ensureEncryptionKeys({ force: true, showReady: true });
+          if (!ready) throw error;
+          await sendEnvelope(activeRoom, envelope, tempId);
+        }
+        return true;
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Message failed to send");
+        return false;
       } finally {
         setIsSending(false);
       }
     },
-    [activeRoom, encryptionSetupStatus, isEncryptionReady, sendEnvelope, uploadEncryptedAttachments, user]
+    [
+      activeRoom,
+      encryptionSetupStatus,
+      ensureEncryptionKeys,
+      isEncryptionReady,
+      sendEnvelope,
+      uploadEncryptedAttachments,
+      user,
+    ]
   );
 
   const openEdit = useCallback((message: Message) => {
@@ -682,33 +722,12 @@ export default function Chat() {
               </div>
             </div>
 
-            {(encryptionSetupStatus !== "ready" || encryptionSetupError) && (
-              <div
-                className={
-                  "mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm shadow-sm " +
-                  (encryptionSetupStatus === "failed"
-                    ? "border-rose bg-rose/10 text-rose"
-                    : "border-amber-200 bg-amber-50 text-amber-900")
-                }
-              >
-                {encryptionSetupStatus === "checking" && "Checking local encryption keys..."}
-                {encryptionSetupStatus === "generating" && "This browser has no local encryption keys. Generating secure encryption keys now..."}
-                {encryptionSetupStatus === "uploading" && "Uploading your public prekey bundle to the server..."}
-                {encryptionSetupStatus === "ready" && "Encryption keys ready. You can now send secure messages."}
-                {encryptionSetupStatus === "failed" && (
-                  <div className="flex flex-col gap-2">
-                    <span>Could not set up encryption keys on this browser. Please refresh or try again.</span>
-                    <button
-                      type="button"
-                      onClick={ensureEncryptionKeys}
-                      className="mt-2 inline-flex items-center justify-center rounded-xl bg-cyan px-3 py-2 text-xs font-semibold text-void hover:bg-cyan/90"
-                    >
-                      Retry setup
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+            <EncryptionSetupBanner
+              status={encryptionSetupStatus}
+              error={encryptionSetupError}
+              showReady={showEncryptionReadyBanner}
+              onRetry={() => void ensureEncryptionKeys({ force: true, showReady: true })}
+            />
 
             <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3">
               {loadingMessages ? (
@@ -819,6 +838,67 @@ function ModalShell({ children, onClose }: { children: ReactNode; onClose: () =>
   );
 }
 
+function EncryptionSetupBanner({
+  status,
+  error,
+  showReady,
+  onRetry,
+}: {
+  status: EncryptionSetupStatus;
+  error: string | null;
+  showReady: boolean;
+  onRetry: () => void;
+}) {
+  if (status === "idle") return null;
+  if (status === "ready" && !showReady && !error) return null;
+
+  const failed = status === "failed";
+  const ready = status === "ready";
+  const loading = status === "checking" || status === "generating" || status === "uploading";
+
+  const message =
+    status === "checking"
+      ? "Checking local encryption keys..."
+      : status === "generating"
+        ? "This browser has no local encryption keys. Generating secure encryption keys now..."
+        : status === "uploading"
+          ? "Uploading your public prekey bundle to the server..."
+          : status === "ready"
+            ? "Encryption keys ready. You can now send secure messages."
+            : "Could not set up encryption keys on this browser. Please refresh or try again.";
+
+  return (
+    <div
+      className={clsx(
+        "mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm shadow-panel",
+        failed && "border-rose/30 bg-rose/10 text-rose",
+        ready && "border-emerald/30 bg-emerald/10 text-emerald",
+        loading && "border-amber/30 bg-amber/10 text-amber"
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center">
+          {loading && <Loader2 size={16} className="animate-spin" />}
+          {ready && <CheckCircle2 size={16} />}
+          {failed && <AlertTriangle size={16} />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">{error ?? message}</p>
+          {failed && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="mt-3 inline-flex items-center justify-center rounded-xl bg-cyan px-3 py-2 text-xs font-semibold text-void hover:bg-cyan/90"
+            >
+              Retry setup
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ModalHeader({ title, onClose }: { title: string; onClose: () => void }) {
   return (
     <div className="mb-3 flex items-center justify-between">
@@ -859,6 +939,11 @@ function assertEncryptedPayload(payload: EncryptedMessagePayload): void {
     !leakedField,
     "Outgoing message payload must not contain plaintext or private key fields"
   );
+}
+
+function isMissingLocalEncryptionKeysError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Missing local encryption keys") || message.includes("No local identity key");
 }
 
 function EmptyState({ onNewChat }: { onNewChat: () => void }) {

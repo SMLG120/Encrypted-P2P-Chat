@@ -116,7 +116,7 @@ export function MessageBubble({
         ) : (
           <div className="flex items-center gap-2">
             <span className="font-mono text-xs text-text-muted">
-              {message.ciphertext.slice(0, 24)}…
+              Encrypted message
             </span>
             <Clock size={12} className="text-text-muted animate-spin" />
           </div>

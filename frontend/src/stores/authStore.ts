@@ -28,7 +28,13 @@ export const useAuthStore = create<AuthStore>((set) => ({
   encryptionSetupStatus: "idle",
   encryptionSetupError: null,
   isEncryptionReady: false,
-  setUser: (user) => set({ user }),
+  setUser: (user) =>
+    set({
+      user,
+      encryptionSetupStatus: "idle",
+      encryptionSetupError: null,
+      isEncryptionReady: false,
+    }),
   setLoading: (isLoading) => set({ isLoading }),
   setEncryptionSetupStatus: (status) =>
     set({ encryptionSetupStatus: status, isEncryptionReady: status === "ready" }),

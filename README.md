@@ -210,6 +210,7 @@ npm run test:e2e
 | `cp backend/.env.example .env` fails | Use `cp .env.example .env`; the template lives at the project root. |
 | `npm ci` says a lockfile is required | `frontend/package-lock.json` must exist. If dependencies change, run `cd frontend && npm install --package-lock-only`. |
 | Compose cannot connect to `docker.sock` | Start Docker Desktop/the Docker daemon, then rerun `docker compose up --build`. |
+| Backend returns HTTP 500 and logs `socket.gaierror` for `postgres` or `redis` | Docker has stale containers attached to an old Compose network. Run `make docker-repair-networks`, or run `docker compose up -d --force-recreate postgres redis && docker compose up -d migrate backend nginx`. This preserves volumes while reconnecting services to the current network. |
 | Passkey verification fails in local dev | `WEBAUTHN_ORIGIN` must exactly match the browser origin. Use `http://localhost:5173` for Vite dev, `http://localhost` for Docker/nginx, and do not mix `localhost` with `127.0.0.1`. |
 
 ---

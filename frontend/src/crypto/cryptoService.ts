@@ -43,11 +43,24 @@ import type { KeyBundle, EncryptedMessage } from "@/types/crypto";
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
+export type LocalIdentitySetupPhase = "checking" | "generating" | "uploading";
+export type LocalIdentitySetupResult = "existing" | "created";
+
+interface LocalIdentitySetupOptions {
+  onStatus?: (status: LocalIdentitySetupPhase) => void;
+}
+
 /**
  * Generate all key material for a new user and upload public keys.
  * Call after successful WebAuthn registration.
  */
-export async function setupIdentity(uploadFn: (bundle: object) => Promise<void>): Promise<void> {
+export async function setupIdentity(
+  uploadFn: (bundle: object) => Promise<void>,
+  options: LocalIdentitySetupOptions = {},
+): Promise<void> {
+  console.debug("generating local identity keys");
+  options.onStatus?.("generating");
+
   const identity = generateIdentity();
   const signedPrekey = generateSignedPrekey(1, identity.signingPrivateKey);
   const oneTimePrekeys = generateOneTimePrekeys(20, 0);
@@ -77,26 +90,28 @@ export async function setupIdentity(uploadFn: (bundle: object) => Promise<void>)
 
   // Upload ONLY public keys to server
   const bundle = buildKeyBundleUpload(identity, signedPrekey, oneTimePrekeys);
+  console.debug("uploading public prekey bundle");
+  options.onStatus?.("uploading");
   await uploadFn(bundle);
+  console.debug("encryption setup ready");
 }
 
 export async function ensureLocalIdentity(
-  uploadFn: (bundle: object) => Promise<void>
-): Promise<void> {
+  uploadFn: (bundle: object) => Promise<void>,
+  options: LocalIdentitySetupOptions = {},
+): Promise<LocalIdentitySetupResult> {
   console.debug("checking local encryption keys");
+  options.onStatus?.("checking");
+
   const identity = await getIdentityKey();
   if (identity) {
-    console.debug("local encryption keys already present");
-    return;
+    console.debug("encryption setup ready");
+    return "existing";
   }
 
   console.debug("local keys missing");
-  console.debug("generating local identity keys");
-  await setupIdentity(async (bundle) => {
-    console.debug("uploading public prekey bundle");
-    await uploadFn(bundle);
-  });
-  console.debug("encryption setup ready");
+  await setupIdentity(uploadFn, options);
+  return "created";
 }
 
 // ── Session establishment ─────────────────────────────────────────────────────

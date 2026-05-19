@@ -11,6 +11,7 @@ Design choices:
 
 from __future__ import annotations
 
+import socket
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -109,6 +110,18 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=503,
             content={"detail": "Session store unavailable. Please try again shortly."},
+        )
+
+    @app.exception_handler(socket.gaierror)
+    async def dependency_dns_error_handler(request: Request, exc: socket.gaierror):
+        log.error(
+            "dependency_dns_unavailable",
+            path=request.url.path,
+            error_type=exc.__class__.__name__,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Service dependency unavailable. Please try again shortly."},
         )
 
     # ── Routers ────────────────────────────────────────────────────────────

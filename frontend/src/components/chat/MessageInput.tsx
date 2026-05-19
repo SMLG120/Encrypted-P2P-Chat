@@ -3,7 +3,7 @@ import { ImagePlus, Loader2, Send, Lock, X } from "lucide-react";
 import { clsx } from "clsx";
 
 interface MessageInputProps {
-  onSend: (text: string, files: File[]) => Promise<void> | void;
+  onSend: (text: string, files: File[]) => Promise<boolean | void> | boolean | void;
   onTypingStart?: () => void;
   onTypingStop?: () => void;
   disabled?: boolean;
@@ -36,7 +36,8 @@ export function MessageInput({ onSend, onTypingStart, onTypingStop, disabled, bu
   const handleSubmit = useCallback(async () => {
     const trimmed = text.trim();
     if ((!trimmed && files.length === 0) || disabled || busy) return;
-    await onSend(trimmed, files);
+    const sent = await onSend(trimmed, files);
+    if (sent === false) return;
     setText("");
     setFiles([]);
     clearTimeout(typingTimerRef.current);

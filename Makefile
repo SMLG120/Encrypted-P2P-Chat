@@ -1,4 +1,4 @@
-.PHONY: help check-python check-venv check-docker setup dev docker-up docker-down docker-logs test lint format migrate seed-demo clean
+.PHONY: help check-python check-venv check-docker setup dev docker-up docker-down docker-logs docker-repair-networks test lint format migrate seed-demo clean
 
 DOCKER_COMPOSE = docker compose
 DOCKER_COMPOSE_DEV = docker compose -f docker-compose.dev.yml
@@ -61,6 +61,10 @@ docker-logs: check-docker ## Tail logs from all services
 
 docker-logs-backend: check-docker ## Tail backend logs
 	$(DOCKER_COMPOSE) logs -f backend
+
+docker-repair-networks: check-docker ## Recreate infra containers when Docker service DNS is stale
+	$(DOCKER_COMPOSE) up -d --force-recreate postgres redis
+	$(DOCKER_COMPOSE) up -d migrate backend nginx
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
