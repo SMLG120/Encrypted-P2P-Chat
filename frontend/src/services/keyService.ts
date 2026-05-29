@@ -38,4 +38,8 @@ export const keyService = {
       needs_replenishment: boolean;
     }>("/keys/status");
   },
+
+  async replenish(prekeys: Array<{ key_id: number; public_key: string }>): Promise<{ added: number }> {
+    return api.post("/keys/replenish", prekeys);
+  },
 };

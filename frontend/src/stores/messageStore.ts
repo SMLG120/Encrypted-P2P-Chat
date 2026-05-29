@@ -9,9 +9,10 @@ interface MessageStore {
   updateMessage: (roomId: string, msgId: string, patch: Partial<Message>) => void;
   removeMessage: (roomId: string, msgId: string) => void;
   prependMessages: (roomId: string, msgs: Message[]) => void;
+  findRoomForClientMessageId: (clientMessageId: string) => string | undefined;
 }
 
-export const useMessageStore = create<MessageStore>((set) => ({
+export const useMessageStore = create<MessageStore>((set, get) => ({
   messages: {},
   addMessage: (roomId, msg) =>
     set((s) => ({
@@ -56,4 +57,12 @@ export const useMessageStore = create<MessageStore>((set) => ({
         [roomId]: [...msgs, ...(s.messages[roomId] ?? [])],
       },
     })),
+  findRoomForClientMessageId: (clientMessageId) => {
+    for (const [roomId, roomMessages] of Object.entries(get().messages)) {
+      if (roomMessages.some((message: Message) => message.id === clientMessageId)) {
+        return roomId;
+      }
+    }
+    return undefined;
+  },
 }));

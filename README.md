@@ -72,6 +72,30 @@ npm run dev
 
 Open the app at `http://localhost:5173`.
 
+## Docker Quick Start (Full Stack)
+
+Run the entire stack (PostgreSQL, Redis, backend, frontend, nginx) on port 80:
+
+```bash
+export SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(64))")
+docker compose up --build -d
+```
+
+Open the app at `http://localhost` (not `:8000` or `:5173`).
+
+Notes for Docker:
+
+- `SECRET_KEY` is required — generate a random value as shown above.
+- WebAuthn origin for Docker is `http://localhost` (port 80). The default compose config also allows `http://localhost:5173` for mixed dev testing.
+- API and WebSocket use same-origin routing through nginx (`/api/v1`, `/ws`).
+
+Check health:
+
+```bash
+curl -sf http://localhost/health/ready
+docker compose ps
+```
+
 ## Environment Variables
 
 Backend local dev:

@@ -43,6 +43,7 @@ import {
 } from "./keyStore";
 import { b64urlToBytes, bytesToB64url } from "@/lib/base64";
 import type { KeyBundle, EncryptedMessage } from "@/types/crypto";
+import { keyService } from "@/services/keyService";
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -115,6 +116,7 @@ export async function ensureLocalIdentity(
       options.onStatus?.("uploading");
       await uploadFn(existingBundle);
     }
+    await replenishOneTimePrekeysIfNeeded();
     console.debug("encryption setup ready");
     return "existing";
   }
@@ -122,6 +124,37 @@ export async function ensureLocalIdentity(
   console.debug("local identity keys missing");
   await setupIdentity(uploadFn, options);
   return "created";
+}
+
+const OPK_REPLENISH_COUNT = 20;
+
+/**
+ * Generate and upload new one-time prekeys when the server pool is low.
+ */
+export async function replenishOneTimePrekeysIfNeeded(): Promise<void> {
+  const status = await keyService.getStatus();
+  if (!status.needs_replenishment) return;
+
+  const existing = await getAllOneTimePrekeys();
+  const maxKeyId = existing.reduce((max, prekey) => Math.max(max, prekey.keyId), -1);
+  const startKeyId = maxKeyId + 1;
+  const newPrekeys = generateOneTimePrekeys(OPK_REPLENISH_COUNT, startKeyId);
+
+  await storeOneTimePrekeys(
+    newPrekeys.map((prekey) => ({
+      keyId: prekey.keyId,
+      publicKey: prekey.publicKey,
+      privateKey: prekey.privateKey,
+    })),
+  );
+
+  await keyService.replenish(
+    newPrekeys.map((prekey) => ({
+      key_id: prekey.keyId,
+      public_key: prekey.publicKey,
+    })),
+  );
+  console.debug("replenished one-time prekeys", { count: newPrekeys.length });
 }
 
 async function buildExistingKeyBundleUpload(): Promise<object | null> {

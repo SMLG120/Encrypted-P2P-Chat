@@ -48,6 +48,9 @@ services:
       WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-http://localhost,http://localhost:5173}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost,http://localhost:5173}
       COOKIE_SECURE: "false"
+      ATTACHMENT_STORAGE_DIR: /app/uploads/attachments
+    volumes:
+      - attachment_data:/app/uploads/attachments
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -86,6 +89,10 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""
+        VITE_WS_URL: ""
+        VITE_FRONTEND_ORIGIN: http://localhost
     restart: unless-stopped
     networks:
       - internal
@@ -110,6 +117,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  attachment_data:
 
 networks:
   internal:

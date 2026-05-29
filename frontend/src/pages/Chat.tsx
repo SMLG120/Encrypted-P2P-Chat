@@ -90,6 +90,7 @@ export default function Chat() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const typingTimerRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const encryptionSetupPromiseRef = useRef<Promise<boolean> | null>(null);
+  const messageLoadSeqRef = useRef(0);
 
   const activeRoom = getActiveRoom();
   const roomMessages = activeRoomId ? (messages[activeRoomId] ?? []) : [];
@@ -224,9 +225,11 @@ export default function Chat() {
 
       try {
         if (room.type === "group") {
-          const memberIds = room.members.map((member) => member.user_id);
+          const memberIds = room.members
+            .map((member) => member.user_id)
+            .filter((memberId) => memberId !== user.id);
           for (const memberId of memberIds) {
-            const clientMessageId = memberId === user.id ? tempId : `${tempId}:${memberId}`;
+            const clientMessageId = `${tempId}:${memberId}`;
             const encrypted = await encryptForPeer(room, plaintext, memberId, clientMessageId);
             const payload: EncryptedMessagePayload = {
               client_message_id: clientMessageId,
@@ -247,12 +250,10 @@ export default function Chat() {
 
             if (!sentOverWs) {
               const saved = await messageService.sendGroupMessage(room.id, payload);
-              if (memberId === user.id) {
-                await rememberMessageKeyAlias(room.id, clientMessageId, saved.id, memberId);
-                upsertMessage(room.id, { ...saved, decryptedText: plaintext, delivery_status: "sent" }, tempId);
-              }
+              await rememberMessageKeyAlias(room.id, clientMessageId, saved.id, memberId);
             }
           }
+          updateMessage(room.id, tempId, { delivery_status: "sent" });
           return;
         }
 
@@ -396,8 +397,12 @@ export default function Chat() {
         case "error":
         case "message_error": {
           const error = msg as WSError;
-          if (error.client_message_id && activeRoomId) {
-            updateMessage(activeRoomId, error.client_message_id, { delivery_status: "failed" });
+          if (error.client_message_id) {
+            const errorRoomId =
+              activeRoomId ?? useMessageStore.getState().findRoomForClientMessageId(error.client_message_id);
+            if (errorRoomId) {
+              updateMessage(errorRoomId, error.client_message_id, { delivery_status: "failed" });
+            }
           }
           toast.error(error.detail || "Message operation failed");
           break;
@@ -416,10 +421,14 @@ export default function Chat() {
     roomService.list().then(setRooms).catch((error) => toast.error(String(error)));
 
     wsService.connect();
-    setConnectionStatus("relay");
+    const unsubOpen = wsService.onOpen(() => setConnectionStatus("relay"));
+    const unsubClose = wsService.onClose(() => setConnectionStatus("offline"));
 
     return () => {
+      unsubOpen();
+      unsubClose();
       wsService.disconnect();
+      setConnectionStatus("offline");
     };
   }, [navigate, setConnectionStatus, setRooms, user]);
 
@@ -430,15 +439,21 @@ export default function Chat() {
 
   useEffect(() => {
     if (!activeRoomId) return;
+    const loadSeq = ++messageLoadSeqRef.current;
     setLoadingMessages(true);
     messageService
       .list(activeRoomId)
       .then(async (data) => {
+        if (messageLoadSeqRef.current !== loadSeq) return;
         const decrypted = await Promise.all(data.messages.map(decryptForDisplay));
-        setMessages(activeRoomId, decrypted);
+        if (messageLoadSeqRef.current !== loadSeq) return;
+        const current = useMessageStore.getState().messages[activeRoomId] ?? [];
+        setMessages(activeRoomId, mergeMessagesById(decrypted, current));
       })
       .catch((error) => toast.error(error instanceof Error ? error.message : "Could not load messages"))
-      .finally(() => setLoadingMessages(false));
+      .finally(() => {
+        if (messageLoadSeqRef.current === loadSeq) setLoadingMessages(false);
+      });
   }, [activeRoomId, decryptForDisplay, setMessages]);
 
   useEffect(() => {
@@ -1015,6 +1030,16 @@ function ModalHeader({ title, onClose }: { title: string; onClose: () => void })
         <X size={15} />
       </button>
     </div>
+  );
+}
+
+function mergeMessagesById(fetched: Message[], existing: Message[]): Message[] {
+  const byId = new Map(fetched.map((message) => [message.id, message]));
+  for (const message of existing) {
+    if (!byId.has(message.id)) byId.set(message.id, message);
+  }
+  return [...byId.values()].sort(
+    (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
   );
 }
 

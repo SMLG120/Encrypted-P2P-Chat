@@ -7,10 +7,13 @@ import type { WSMessage } from "@/types/websocket";
 import { config } from "@/config";
 
 type Handler = (msg: WSMessage) => void;
+type ConnectionHandler = () => void;
 
 class WebSocketService {
   private ws: WebSocket | null = null;
   private handlers: Set<Handler> = new Set();
+  private openHandlers: Set<ConnectionHandler> = new Set();
+  private closeHandlers: Set<ConnectionHandler> = new Set();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
@@ -26,6 +29,7 @@ class WebSocketService {
     this.ws.onopen = () => {
       this.reconnectDelay = 1000;
       this.startHeartbeat();
+      this.openHandlers.forEach((handler) => handler());
     };
 
     this.ws.onmessage = (event) => {
@@ -40,6 +44,7 @@ class WebSocketService {
 
     this.ws.onclose = () => {
       this.stopHeartbeat();
+      this.closeHandlers.forEach((handler) => handler());
       if (this.shouldReconnect) this.scheduleReconnect();
     };
 
@@ -67,6 +72,16 @@ class WebSocketService {
   onMessage(handler: Handler): () => void {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
+  }
+
+  onOpen(handler: ConnectionHandler): () => void {
+    this.openHandlers.add(handler);
+    return () => this.openHandlers.delete(handler);
+  }
+
+  onClose(handler: ConnectionHandler): () => void {
+    this.closeHandlers.add(handler);
+    return () => this.closeHandlers.delete(handler);
   }
 
   get isConnected(): boolean {

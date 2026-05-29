@@ -6,6 +6,15 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 
 COPY . .
+
+# Empty VITE_API_URL → same-origin (nginx on port 80 in production)
+ARG VITE_API_URL=
+ARG VITE_WS_URL=
+ARG VITE_FRONTEND_ORIGIN=http://localhost
+ENV VITE_API_URL=$VITE_API_URL \
+    VITE_WS_URL=$VITE_WS_URL \
+    VITE_FRONTEND_ORIGIN=$VITE_FRONTEND_ORIGIN
+
 RUN npm run build
 
 # ── Serve stage ───────────────────────────────────────────────────────────────
