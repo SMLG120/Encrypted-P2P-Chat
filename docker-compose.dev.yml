@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: chat
       POSTGRES_PASSWORD: chatpass
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_dev:/var/lib/postgresql/data
     healthcheck:
@@ -18,7 +18,7 @@ services:
     image: redis:7-alpine
     command: redis-server --maxmemory 128mb
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
