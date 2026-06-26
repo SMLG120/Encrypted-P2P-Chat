@@ -1,3 +1,5 @@
+import type { DecryptionFailureReason } from "@/lib/decryptionErrors";
+
 // Chat types
 export interface Room {
   id: string;
@@ -43,12 +45,12 @@ export interface Message {
   // Client-side decrypted content (never sent to server)
   decryptedText?: string;
   decryptionFailed?: boolean;
+  decryptionFailureReason?: DecryptionFailureReason;
 }
 
 export interface Attachment {
   id: string;
   room_id: string;
-  message_id?: string | null;
   uploader_id: string;
   filename: string;
   mime_type: string;

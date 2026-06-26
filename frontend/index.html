@@ -12,7 +12,17 @@
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap"
       rel="stylesheet"
     />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws: wss:; img-src 'self' data: https:;" />
+    <!--
+      connect-src includes %VITE_API_URL%/%VITE_WS_URL% because the backend
+      can be on a different origin than this page (e.g. localhost:5173 vs
+      localhost:8000 in dev, or a separate Render domain vs a Vercel domain
+      in production). Vite replaces %VITE_*% with the resolved env value at
+      build/serve time — see .env.development / .env.production. When those
+      are empty (the same-origin Docker/nginx deployment, see
+      frontend/Dockerfile), this resolves to a harmless blank and 'self'
+      already covers it; ws:/wss: stay as a fallback for that case.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' %VITE_API_URL% %VITE_WS_URL% ws: wss:; img-src 'self' data: https:;" />
   </head>
   <body class="bg-void text-text-primary antialiased">
     <div id="root"></div>

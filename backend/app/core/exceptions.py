@@ -77,6 +77,16 @@ class AttachmentNotFoundError(NotFoundError):
     detail = "Attachment not found"
 
 
+class AttachmentBlobMissingError(AppError):
+    """The attachment row exists (and the caller is authorized) but the
+    encrypted blob itself is gone from storage — distinct from 404 so the
+    client can tell "never existed / not yours" apart from "existed, but
+    the file is gone" (e.g. evicted from disk, deleted from the bucket)."""
+
+    status_code = status.HTTP_410_GONE
+    detail = "Attachment file is no longer available"
+
+
 # ── Conflict ──────────────────────────────────────────────────────────────────
 
 

@@ -1,10 +1,11 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { AlertCircle, Clock, Forward, Lock } from "lucide-react";
 import { clsx } from "clsx";
 import { formatMessageTime } from "@/lib/date";
 import { AttachmentPreview } from "@/components/chat/AttachmentPreview";
 import { MessageActions } from "@/components/chat/MessageActions";
 import { MessageStatus } from "@/components/chat/MessageStatus";
+import { decryptionFailureMessage } from "@/lib/decryptionErrors";
 import { decodeMessageEnvelope } from "@/lib/messageEnvelope";
 import type { Message } from "@/types/chat";
 
@@ -31,7 +32,13 @@ export function MessageBubble({
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isDecrypted = message.decryptedText !== undefined;
   const failed = message.decryptionFailed;
-  const envelope = decodeMessageEnvelope(message.decryptedText);
+  // Memoized so attachments keep a stable object identity across re-renders
+  // (typing indicators, read receipts, etc.) — otherwise AttachmentPreview's
+  // decrypt effect below would re-run and revoke its blob URL constantly.
+  const envelope = useMemo(
+    () => decodeMessageEnvelope(message.decryptedText),
+    [message.decryptedText]
+  );
   const canEdit = isMine && isDecrypted && !message.is_deleted && message.delivery_status !== "failed";
   const canDelete = isMine && !message.is_deleted && message.delivery_status !== "failed";
   const canForward = isDecrypted && !message.is_deleted && message.delivery_status !== "failed";
@@ -76,7 +83,13 @@ export function MessageBubble({
         {/* Encryption indicator */}
         <div className={clsx("absolute -top-1.5", isMine ? "-right-1" : "-left-1")}>
           <div
-            title={isDecrypted ? "Decrypted successfully" : failed ? "Decryption failed" : "Encrypted"}
+            title={
+              isDecrypted
+                ? "Decrypted successfully"
+                : failed
+                  ? decryptionFailureMessage(message.decryptionFailureReason ?? "wrong_key")
+                  : "Encrypted"
+            }
             className={clsx(
               "w-3 h-3 rounded-full flex items-center justify-center",
               isDecrypted && "bg-emerald/80",
@@ -111,7 +124,9 @@ export function MessageBubble({
         ) : failed ? (
           <div className="flex items-center gap-2 text-sm text-rose">
             <AlertCircle size={14} />
-            <span className="font-mono text-xs">Decryption failed</span>
+            <span className="font-mono text-xs">
+              {decryptionFailureMessage(message.decryptionFailureReason ?? "wrong_key")}
+            </span>
           </div>
         ) : (
           <div className="flex items-center gap-2">

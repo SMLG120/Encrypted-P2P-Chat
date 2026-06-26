@@ -8,7 +8,6 @@ from app.core.config import settings
 from app.core.dependencies import CurrentUser, DbDep
 from app.core.rate_limit import limiter
 from app.repositories.key_repository import KeyRepository
-from app.repositories.user_repository import UserRepository
 from app.schemas.keys import KeyBundleResponse, KeyBundleUpload, KeyStatusResponse, OneTimePrekeyUpload
 from app.services.key_service import KeyService
 

@@ -8,7 +8,6 @@ from app.core.config import settings
 from app.core.dependencies import CurrentUser, DbDep
 from app.core.rate_limit import limiter
 from app.repositories.user_repository import UserRepository
-from app.schemas.auth import UserResponse
 from app.schemas.user import UserPublicProfile, UserSearchResponse
 
 router = APIRouter(prefix="/users", tags=["users"])

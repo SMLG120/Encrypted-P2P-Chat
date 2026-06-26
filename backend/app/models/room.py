@@ -15,7 +15,6 @@ from app.models.base import Base
 if TYPE_CHECKING:
     from app.models.membership import Membership
     from app.models.message import Message
-    from app.models.user import User
 
 
 class Room(Base):

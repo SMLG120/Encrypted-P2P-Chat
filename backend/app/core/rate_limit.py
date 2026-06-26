@@ -9,8 +9,6 @@ from fastapi import Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from app.core.config import settings
-
 
 def _get_user_or_ip(request: Request) -> str:
     """Use user ID when authenticated, IP otherwise."""

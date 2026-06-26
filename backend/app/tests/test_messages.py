@@ -708,3 +708,80 @@ async def test_unrelated_user_cannot_download_attachment(
 
     denied = await client.get(attachment["url"], cookies=_cookies(mallory))
     assert denied.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_sender_can_download_own_attachment(
+    client: AsyncClient, db_session: AsyncSession, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_DIR", str(tmp_path))
+    alice = await create_test_user(db_session, "alice_self_dl")
+    bob = await create_test_user(db_session, "bob_self_dl")
+    room_id = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+    encrypted_blob = b"sender-self-download-bytes"
+
+    upload = await client.post(
+        f"/api/v1/rooms/{room_id}/attachments",
+        files={"file": ("self.png.encrypted", encrypted_blob, "application/octet-stream")},
+        data={"filename": "self.png", "mime_type": "image/png", "size_bytes": str(len(encrypted_blob))},
+        cookies=_cookies(alice),
+    )
+    assert upload.status_code == 201
+    attachment = upload.json()
+
+    downloaded = await client.get(attachment["url"], cookies=_cookies(alice))
+    assert downloaded.status_code == 200
+    assert downloaded.content == encrypted_blob
+
+
+@pytest.mark.asyncio
+async def test_download_nonexistent_attachment_returns_404(
+    client: AsyncClient, db_session: AsyncSession
+):
+    alice = await create_test_user(db_session, "alice_404")
+    missing_id = uuid.uuid4()
+
+    resp = await client.get(f"/api/v1/attachments/{missing_id}/blob", cookies=_cookies(alice))
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_missing_blob_returns_410(
+    client: AsyncClient, db_session: AsyncSession, tmp_path, monkeypatch
+):
+    """Row exists and the caller is authorized, but the encrypted file
+    itself has been removed from storage (e.g. evicted from disk) — this
+    must be distinguishable from "never existed" (404) or "not yours" (403)."""
+    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_DIR", str(tmp_path))
+    alice = await create_test_user(db_session, "alice_410")
+    bob = await create_test_user(db_session, "bob_410")
+    room_id = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+    encrypted_blob = b"will-be-deleted-from-disk"
+
+    upload = await client.post(
+        f"/api/v1/rooms/{room_id}/attachments",
+        files={"file": ("gone.png.encrypted", encrypted_blob, "application/octet-stream")},
+        data={"filename": "gone.png", "mime_type": "image/png", "size_bytes": str(len(encrypted_blob))},
+        cookies=_cookies(alice),
+    )
+    assert upload.status_code == 201
+    attachment = upload.json()
+
+    # Simulate the blob disappearing from disk after the row was created.
+    for path in tmp_path.iterdir():
+        path.unlink()
+
+    resp = await client.get(attachment["url"], cookies=_cookies(bob))
+    assert resp.status_code == 410

@@ -3,13 +3,14 @@
 import hashlib
 import re
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 
+from app.core.attachment_storage import AttachmentStorage, get_attachment_storage
 from app.core.config import settings
 from app.core.dependencies import CurrentUser, DbDep
+from app.core.exceptions import AttachmentBlobMissingError, ValidationError
 from app.core.rate_limit import limiter
 from app.repositories.message_repository import MessageRepository
 from app.repositories.room_repository import RoomRepository
@@ -187,7 +188,9 @@ async def forward_message(
 
 
 @router.post("/rooms/{room_id}/attachments", status_code=201)
+@limiter.limit(settings.RATE_LIMIT_UPLOADS)
 async def upload_attachment(
+    request: Request,
     room_id: uuid.UUID,
     current_user: CurrentUser,
     file: UploadFile = File(...),
@@ -195,14 +198,16 @@ async def upload_attachment(
     mime_type: str = Form(...),
     size_bytes: int = Form(...),
     svc: MessageService = Depends(_get_message_service),
+    storage: AttachmentStorage = Depends(get_attachment_storage),
 ) -> AttachmentResponse:
     sanitized = _SAFE_FILENAME.sub("_", filename).strip("._") or "attachment.bin"
     data = await file.read(settings.ATTACHMENT_MAX_BYTES + 1025)
     if len(data) > settings.ATTACHMENT_MAX_BYTES + 1024:
-        from app.core.exceptions import ValidationError
-
         raise ValidationError("Attachment is too large")
     sha256 = hashlib.sha256(data).hexdigest()
+    # object_key is always server-generated — never derived from the
+    # client-supplied filename — so neither storage backend is exposed to
+    # path traversal via this value.
     object_key = f"{uuid.uuid4()}.bin"
 
     attachment = await svc.create_attachment(
@@ -215,9 +220,7 @@ async def upload_attachment(
         sha256=sha256,
     )
 
-    storage_dir = Path(settings.ATTACHMENT_STORAGE_DIR)
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    svc.attachment_path(attachment).write_bytes(data)
+    await storage.save(object_key, data)
     response = svc.attachment_response(attachment)
     await _broadcast_room_event(
         svc,
@@ -233,17 +236,22 @@ async def get_attachment_blob(
     attachment_id: uuid.UUID,
     current_user: CurrentUser,
     svc: MessageService = Depends(_get_message_service),
-) -> FileResponse:
+    storage: AttachmentStorage = Depends(get_attachment_storage),
+) -> Response:
+    # get_attachment_for_user already raises AttachmentNotFoundError (404)
+    # if the row itself doesn't exist, or ForbiddenError (403) if the
+    # caller isn't a member of the room it belongs to. Reaching this point
+    # means the row exists and the caller is authorized — if the blob is
+    # still missing, that's a distinct "it existed but the file is gone"
+    # case (410), not "not found" (404) or "forbidden" (403).
     attachment = await svc.get_attachment_for_user(attachment_id, current_user.id)
-    path = svc.attachment_path(attachment)
-    if not path.exists():
-        from app.core.exceptions import AttachmentNotFoundError
-
-        raise AttachmentNotFoundError()
-    return FileResponse(
-        path,
+    data = await storage.load(attachment.object_key)
+    if data is None:
+        raise AttachmentBlobMissingError()
+    return Response(
+        content=data,
         media_type="application/octet-stream",
-        filename=attachment.filename,
+        headers={"Content-Disposition": f'attachment; filename="{attachment.filename}"'},
     )
 
 

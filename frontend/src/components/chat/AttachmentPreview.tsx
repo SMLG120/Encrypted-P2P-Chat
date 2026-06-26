@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Download, ImageIcon, Loader2 } from "lucide-react";
+import { AlertTriangle, Download, ImageIcon, Loader2 } from "lucide-react";
 
 import { decryptAttachmentBlob } from "@/lib/attachmentCrypto";
+import { attachmentFailureMessage, classifyHttpStatus, type AttachmentFailureReason } from "@/lib/attachmentErrors";
 import type { ClientAttachmentRef } from "@/lib/messageEnvelope";
 
 interface AttachmentPreviewProps {
@@ -10,7 +11,7 @@ interface AttachmentPreviewProps {
 
 export function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
   const [url, setUrl] = useState(attachment.localUrl ?? "");
-  const [failed, setFailed] = useState(false);
+  const [failureReason, setFailureReason] = useState<AttachmentFailureReason | null>(null);
 
   useEffect(() => {
     if (attachment.localUrl) {
@@ -22,21 +23,41 @@ export function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
     let cancelled = false;
 
     async function load() {
+      let response: Response;
       try {
-        const response = await fetch(attachment.url, { credentials: "include" });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const encryptedBlob = await response.blob();
-        const blob = await decryptAttachmentBlob(
+        response = await fetch(attachment.url, { credentials: "include" });
+      } catch {
+        // fetch() only throws for a genuine network-level failure (DNS,
+        // connection refused, CORS rejection) — an HTTP error status does
+        // NOT land here, it's a normal resolved response handled below.
+        if (!cancelled) setFailureReason("network");
+        return;
+      }
+
+      if (!response.ok) {
+        if (!cancelled) setFailureReason(classifyHttpStatus(response.status));
+        return;
+      }
+
+      const encryptedBlob = await response.blob();
+      let blob: Blob;
+      try {
+        blob = await decryptAttachmentBlob(
           encryptedBlob,
           attachment.key,
           attachment.nonce,
           attachment.mimeType
         );
-        objectUrl = URL.createObjectURL(blob);
-        if (!cancelled) setUrl(objectUrl);
       } catch {
-        if (!cancelled) setFailed(true);
+        // The encrypted bytes downloaded fine — this is a local-key
+        // problem (wrong/missing device key for this attachment), not a
+        // network issue, so it must not be reported as one.
+        if (!cancelled) setFailureReason("decrypt_failed");
+        return;
       }
+
+      objectUrl = URL.createObjectURL(blob);
+      if (!cancelled) setUrl(objectUrl);
     }
 
     load();
@@ -44,13 +65,20 @@ export function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [attachment]);
+    // Deliberately keyed on the attachment's stable identity, not the
+    // `attachment` object reference: the parent re-creates a fresh
+    // ClientAttachmentRef object on every chat re-render (typing
+    // indicators, read receipts, etc.), which previously re-triggered this
+    // effect constantly — revoking the blob URL out from under an
+    // in-progress download and making it fail with a generic network error.
+  }, [attachment.id, attachment.url, attachment.key, attachment.nonce, attachment.mimeType, attachment.localUrl]);
 
-  if (failed) {
+  if (failureReason) {
+    const Icon = failureReason === "decrypt_failed" ? AlertTriangle : ImageIcon;
     return (
       <div className="mt-2 flex items-center gap-2 rounded-md border border-rose/30 bg-rose/5 px-3 py-2 text-xs text-rose">
-        <ImageIcon size={14} />
-        <span>Attachment unavailable</span>
+        <Icon size={14} />
+        <span>{attachmentFailureMessage(failureReason)}</span>
       </div>
     );
   }

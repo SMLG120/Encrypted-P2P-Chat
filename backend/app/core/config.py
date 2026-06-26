@@ -9,7 +9,7 @@ import secrets
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AliasChoices, Field, PostgresDsn, field_validator
+from pydantic import AliasChoices, Field, PostgresDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_MESSAGES: str = "60/minute"
     RATE_LIMIT_SEARCH: str = "30/minute"
     RATE_LIMIT_KEYS: str = "20/minute"
+    RATE_LIMIT_UPLOADS: str = "20/minute"
 
     # ── Prekey Config ─────────────────────────────────────────────────────
     MIN_ONE_TIME_PREKEYS: int = 10
@@ -89,6 +90,10 @@ class Settings(BaseSettings):
     WS_MAX_CONNECTIONS_PER_USER: int = 5
 
     # ── Attachments ───────────────────────────────────────────────────────
+    # "local" writes to ATTACHMENT_STORAGE_DIR (fine for Docker Compose with
+    # its named volume). Use "s3" for any platform without a persistent/
+    # shared disk — works with AWS S3, Cloudflare R2, Supabase Storage, MinIO.
+    ATTACHMENT_STORAGE_BACKEND: Literal["local", "s3"] = "local"
     ATTACHMENT_STORAGE_DIR: str = "uploads/attachments"
     ATTACHMENT_MAX_BYTES: int = 10 * 1024 * 1024
     ATTACHMENT_ALLOWED_MIME_TYPES: list[str] | str = [
@@ -97,6 +102,13 @@ class Settings(BaseSettings):
         "image/png",
         "image/webp",
     ]
+
+    # ── S3-compatible object storage (only used when ATTACHMENT_STORAGE_BACKEND=s3) ──
+    S3_BUCKET: str | None = None
+    S3_REGION: str = "auto"
+    S3_ENDPOINT_URL: str | None = None  # set for R2/MinIO/Supabase; leave unset for AWS S3
+    S3_ACCESS_KEY_ID: str | None = None
+    S3_SECRET_ACCESS_KEY: str | None = None
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
@@ -130,6 +142,17 @@ class Settings(BaseSettings):
         if value in {"0", "false", "no", "off", "release", "prod", "production"}:
             return False
         raise ValueError("DEBUG must be a boolean-like value")
+
+    @model_validator(mode="after")
+    def validate_s3_config(self) -> "Settings":
+        if self.ATTACHMENT_STORAGE_BACKEND == "s3" and not (
+            self.S3_BUCKET and self.S3_ACCESS_KEY_ID and self.S3_SECRET_ACCESS_KEY
+        ):
+            raise ValueError(
+                "ATTACHMENT_STORAGE_BACKEND=s3 requires S3_BUCKET, S3_ACCESS_KEY_ID, "
+                "and S3_SECRET_ACCESS_KEY to be set"
+            )
+        return self
 
     @property
     def is_production(self) -> bool:

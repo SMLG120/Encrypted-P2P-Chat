@@ -65,7 +65,7 @@ class KeyRepository:
         # Deactivate previous active signed prekey
         await self._db.execute(
             update(SignedPrekey)
-            .where(SignedPrekey.user_id == user_id, SignedPrekey.is_active == True)
+            .where(SignedPrekey.user_id == user_id, SignedPrekey.is_active.is_(True))
             .values(is_active=False)
         )
         prekey = SignedPrekey(
@@ -84,7 +84,7 @@ class KeyRepository:
         result = await self._db.execute(
             select(SignedPrekey).where(
                 SignedPrekey.user_id == user_id,
-                SignedPrekey.is_active == True,
+                SignedPrekey.is_active.is_(True),
             )
         )
         return result.scalar_one_or_none()
@@ -110,7 +110,7 @@ class KeyRepository:
         result = await self._db.execute(
             delete(OneTimePrekey).where(
                 OneTimePrekey.user_id == user_id,
-                OneTimePrekey.is_used == False,
+                OneTimePrekey.is_used.is_(False),
             )
         )
         await self._db.flush()
@@ -126,7 +126,7 @@ class KeyRepository:
             select(OneTimePrekey)
             .where(
                 OneTimePrekey.user_id == user_id,
-                OneTimePrekey.is_used == False,
+                OneTimePrekey.is_used.is_(False),
             )
             .limit(1)
             .with_for_update(skip_locked=True)
@@ -142,7 +142,7 @@ class KeyRepository:
         result = await self._db.execute(
             select(func.count(OneTimePrekey.id)).where(
                 OneTimePrekey.user_id == user_id,
-                OneTimePrekey.is_used == False,
+                OneTimePrekey.is_used.is_(False),
             )
         )
         return result.scalar_one()

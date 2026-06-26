@@ -25,6 +25,7 @@ import {
   rememberMessageKeyAlias,
 } from "@/crypto/cryptoService";
 import { encryptAttachmentFile } from "@/lib/attachmentCrypto";
+import { classifyDecryptionError } from "@/lib/decryptionErrors";
 import {
   createMessageEnvelope,
   decodeMessageEnvelope,
@@ -87,6 +88,7 @@ export default function Chat() {
   const [editText, setEditText] = useState("");
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [showEncryptionReadyBanner, setShowEncryptionReadyBanner] = useState(false);
+  const [identityHistoryWarning, setIdentityHistoryWarning] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const typingTimerRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const encryptionSetupPromiseRef = useRef<Promise<boolean> | null>(null);
@@ -140,8 +142,12 @@ export default function Chat() {
     try {
       console.debug("attempting decrypt with peer_id");
       return { ...message, decryptedText: await decryptMessage(message.room_id, message, peerId) };
-    } catch {
-      return { ...message, decryptionFailed: true };
+    } catch (error) {
+      return {
+        ...message,
+        decryptionFailed: true,
+        decryptionFailureReason: classifyDecryptionError(error),
+      };
     }
   }, [peerIdForMessage]);
 
@@ -467,6 +473,7 @@ export default function Chat() {
 
       const setupPromise = (async () => {
         setShowEncryptionReadyBanner(false);
+        setIdentityHistoryWarning(false);
         setEncryptionSetupError(null);
 
         try {
@@ -475,7 +482,25 @@ export default function Chat() {
           });
           setEncryptionSetupStatus("ready");
 
-          if (result === "created" || options.showReady) {
+          if (result === "created") {
+            // A brand-new identity was just generated on this browser. If
+            // this account already has rooms/messages from before, those
+            // older messages were encrypted for whatever identity existed
+            // previously and CANNOT be decrypted with this new one — do not
+            // present this as unconditional good news (see SECURITY.md).
+            const existingRooms = await roomService.list().catch(() => []);
+            if (existingRooms.length > 0) {
+              setIdentityHistoryWarning(true);
+              setShowEncryptionReadyBanner(true);
+              toast.warning(
+                "New encryption keys were created on this browser — older messages on this account may be unreadable.",
+                { duration: 8000 }
+              );
+            } else {
+              setShowEncryptionReadyBanner(true);
+              toast.success("Encryption keys ready. You can now send secure messages.");
+            }
+          } else if (options.showReady) {
             setShowEncryptionReadyBanner(true);
             toast.success("Encryption keys ready. You can now send secure messages.");
           }
@@ -814,6 +839,7 @@ export default function Chat() {
               status={encryptionSetupStatus}
               error={encryptionSetupError}
               showReady={showEncryptionReadyBanner}
+              identityHistoryWarning={identityHistoryWarning}
               onRetry={() => void ensureEncryptionKeys({ force: true, showReady: true })}
             />
 
@@ -960,18 +986,26 @@ function EncryptionSetupBanner({
   status,
   error,
   showReady,
+  identityHistoryWarning,
   onRetry,
 }: {
   status: EncryptionSetupStatus;
   error: string | null;
   showReady: boolean;
+  identityHistoryWarning: boolean;
   onRetry: () => void;
 }) {
   if (status === "idle") return null;
   if (status === "ready" && !showReady && !error) return null;
 
   const failed = status === "failed";
-  const ready = status === "ready";
+  // A fresh identity was generated for an account that already has
+  // conversation history — older messages were encrypted for whichever
+  // identity existed before and cannot be decrypted with this new one.
+  // This must not be presented as the same unconditional good news as a
+  // first-time setup, so it gets its own (amber, not green) banner state.
+  const warning = status === "ready" && identityHistoryWarning;
+  const ready = status === "ready" && !warning;
   const loading = status === "checking" || status === "generating" || status === "uploading";
 
   const message =
@@ -981,9 +1015,11 @@ function EncryptionSetupBanner({
         ? "This browser has no local encryption keys. Generating secure encryption keys now..."
         : status === "uploading"
           ? "Uploading your public prekey bundle to the server..."
-          : status === "ready"
-            ? "Encryption keys ready. You can now send secure messages."
-            : "Could not set up encryption keys on this browser. Please refresh or try again.";
+          : warning
+            ? "This browser does not have the encryption keys needed to read older messages. New messages can work after creating a new identity, but older messages may remain unreadable unless you restore your keys."
+            : status === "ready"
+              ? "Encryption keys ready. You can now send secure messages."
+              : "Could not set up encryption keys on this browser. Please refresh or try again.";
 
   return (
     <div
@@ -991,6 +1027,7 @@ function EncryptionSetupBanner({
         "mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm shadow-panel",
         failed && "border-rose/30 bg-rose/10 text-rose",
         ready && "border-emerald/30 bg-emerald/10 text-emerald",
+        warning && "border-amber/30 bg-amber/10 text-amber",
         loading && "border-amber/30 bg-amber/10 text-amber"
       )}
     >
@@ -998,7 +1035,7 @@ function EncryptionSetupBanner({
         <div className="mt-0.5 flex h-5 w-5 flex-shrink-0 items-center justify-center">
           {loading && <Loader2 size={16} className="animate-spin" />}
           {ready && <CheckCircle2 size={16} />}
-          {failed && <AlertTriangle size={16} />}
+          {(failed || warning) && <AlertTriangle size={16} />}
         </div>
         <div className="min-w-0 flex-1">
           <p className="font-medium">{error ?? message}</p>

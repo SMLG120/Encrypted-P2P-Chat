@@ -6,7 +6,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
-from app.core.exceptions import NoPrekeysAvailableError
 from app.core.logging import get_logger
 from app.repositories.key_repository import KeyRepository
 from app.schemas.keys import (

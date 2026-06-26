@@ -4,7 +4,6 @@ Verify: server stores only public keys, never private keys.
 """
 
 import pytest
-import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 

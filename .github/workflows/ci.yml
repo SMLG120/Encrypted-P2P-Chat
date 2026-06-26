@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend lint + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Lint (ruff)
+        run: ruff check app
+        working-directory: backend
+      - name: Tests (pytest)
+        run: pytest app/tests -q
+        working-directory: backend
+
+  migration-check:
+    name: Alembic migration check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: chatdb
+          POSTGRES_USER: chat
+          POSTGRES_PASSWORD: chatpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chat -d chatdb"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://chat:chatpass@localhost:5432/chatdb
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Apply all migrations to a fresh database
+        run: python -m alembic upgrade head
+        working-directory: backend
+
+  frontend:
+    name: Frontend typecheck + tests + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Lint (eslint)
+        run: npm run lint
+        working-directory: frontend
+      - name: Typecheck
+        run: npx tsc --noEmit
+        working-directory: frontend
+      - name: Tests (vitest)
+        run: npx vitest run
+        working-directory: frontend
+      - name: Build
+        run: npm run build
+        working-directory: frontend
+
+  docker-build:
+    name: Docker build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        run: docker build -t chat-backend:ci ./backend
+      - name: Build frontend image
+        run: docker build -t chat-frontend:ci ./frontend
+
+  secret-scan:
+    name: No secrets committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if .env or key/cert files are tracked
+        run: |
+          tracked_secrets=$(git ls-files | grep -E '(^|/)\.env$|\.(pem|key|cert)$' || true)
+          if [ -n "$tracked_secrets" ]; then
+            echo "Tracked files that look like secrets:"
+            echo "$tracked_secrets"
+            exit 1
+          fi
+      - name: Scan tracked files for likely hardcoded credentials
+        run: |
+          # Heuristic only — looks for common cloud-credential shapes outside
+          # of lockfiles/vendored deps. Not a substitute for a real secret
+          # scanner (e.g. gitleaks) but catches obvious accidents in CI
+          # without depending on a third-party action.
+          matches=$(git grep -nIE "AKIA[0-9A-Z]{16}|-----BEGIN (RSA|EC|OPENSSH|PGP) PRIVATE KEY-----" -- . ':!*/package-lock.json' ':!*/node_modules/**' || true)
+          if [ -n "$matches" ]; then
+            echo "Possible hardcoded credentials found:"
+            echo "$matches"
+            exit 1
+          fi

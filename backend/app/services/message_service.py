@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm.attributes import set_committed_value
@@ -328,6 +327,3 @@ class MessageService:
             await self._messages.mark_delivered(message_id)
             msg.delivery_status = "delivered"
         return msg
-
-    def attachment_path(self, attachment: MessageAttachment) -> Path:
-        return Path(settings.ATTACHMENT_STORAGE_DIR) / attachment.object_key

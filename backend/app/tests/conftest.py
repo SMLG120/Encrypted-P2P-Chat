@@ -8,16 +8,13 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 import pytest_asyncio
 from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.dependencies import create_session_cookie, get_db, get_redis
-from app.core.config import settings
 from app.main import create_app
 from app.models.base import Base
 from app.models import *  # noqa: F401,F403 — import all models for metadata

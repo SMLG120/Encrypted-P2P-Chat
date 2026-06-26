@@ -70,3 +70,28 @@ For production-grade secure messaging, use: **Signal**, **WhatsApp** (for E2EE),
 3. **Metadata leakage:** The server knows room membership and message timing — this is hard to avoid without a more sophisticated anonymity network (e.g., Tor + PIR).
 4. **Not audited:** See disclaimer above.
 5. **Single device:** Each user has one identity key. Multi-device key distribution (like Signal's sealed sender) is not implemented.
+
+---
+
+## Attachments and Object Storage
+
+File attachments are encrypted client-side (random per-file key, never sent to the server) before upload, exactly like message content. The server only ever stores the encrypted blob plus non-sensitive routing metadata (room id, uploader id, filename, MIME type, size, sha256 of the *ciphertext*).
+
+This holds regardless of which storage backend is configured:
+
+- **Local disk** (`ATTACHMENT_STORAGE_BACKEND=local`, default): blobs live under `ATTACHMENT_STORAGE_DIR` on the backend host/container.
+- **S3-compatible** (`ATTACHMENT_STORAGE_BACKEND=s3`): blobs live in the configured bucket (AWS S3, Cloudflare R2, Supabase Storage, or any S3-compatible endpoint). The bucket only ever receives ciphertext — enable default server-side encryption on the bucket as defense in depth, but it is not a substitute for the client-side encryption, which is what actually protects confidentiality from the storage provider itself.
+
+Object keys are server-generated UUIDs, never derived from user-supplied filenames or paths, so there is no path-traversal surface on either backend. Downloads (`GET /api/v1/attachments/{id}/blob`) require the requester to be a member of the room the attachment belongs to — see `MessageService.get_attachment_for_user`.
+
+---
+
+## Responsible Disclosure
+
+This is a portfolio/educational project, not a funded or monitored security program — there is no bug bounty. That said, if you find a real vulnerability:
+
+1. Do not open a public GitHub issue with exploit details.
+2. Email the maintainer (replace with a real contact before deploying this publicly: `security@REPLACE_WITH_YOUR_DOMAIN`) with a description and reproduction steps.
+3. Allow a reasonable window to respond before any public disclosure.
+
+Given the disclaimer above, treat any report as informational rather than expecting a coordinated CVE-style response.
