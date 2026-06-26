@@ -506,3 +506,205 @@ async def test_upload_image_attachment_and_download_encrypted_blob(
     downloaded = await client.get(attachment["url"], cookies=_cookies(bob))
     assert downloaded.status_code == 200
     assert downloaded.content == encrypted_blob
+
+
+@pytest.mark.asyncio
+async def test_group_attachment_can_be_sent_to_each_recipient(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_DIR", str(tmp_path))
+    alice = await create_test_user(db_session, "alice_group_upload")
+    bob = await create_test_user(db_session, "bob_group_upload")
+    carol = await create_test_user(db_session, "carol_group_upload")
+
+    room = (
+        await client.post(
+            "/api/v1/rooms/group",
+            json={"name": "Attachment Group", "member_ids": [str(bob.id), str(carol.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()
+    encrypted_blob = b"encrypted-group-image-bytes"
+
+    upload = await client.post(
+        f"/api/v1/rooms/{room['id']}/attachments",
+        files={"file": ("group.png.encrypted", encrypted_blob, "application/octet-stream")},
+        data={"filename": "group.png", "mime_type": "image/png", "size_bytes": str(len(encrypted_blob))},
+        cookies=_cookies(alice),
+    )
+    assert upload.status_code == 201
+    attachment = upload.json()
+
+    for recipient, ciphertext in (
+        (bob, "Ym9iLWdyb3VwLWF0dGFjaG1lbnQ"),
+        (carol, "Y2Fyb2wtZ3JvdXAtYXR0YWNobWVudA"),
+    ):
+        sent = await client.post(
+            f"/api/v1/rooms/{room['id']}/messages",
+            json={
+                "recipient_id": str(recipient.id),
+                "ciphertext": ciphertext,
+                "encrypted_header": "Z3JvdXAtYXR0YWNobWVudC1oZWFkZXI",
+                "nonce": "Z3JvdXAtYXR0YWNobWVudC1ub25jZQ",
+                "attachment_ids": [attachment["id"]],
+            },
+            cookies=_cookies(alice),
+        )
+        assert sent.status_code == 201
+
+        downloaded = await client.get(attachment["url"], cookies=_cookies(recipient))
+        assert downloaded.status_code == 200
+        assert downloaded.content == encrypted_blob
+
+    # Regression: the attachment must stay linked to EVERY recipient's
+    # message row after a reload, not just the first one that claimed it.
+    history = await client.get(f"/api/v1/rooms/{room['id']}/messages", cookies=_cookies(bob))
+    assert history.status_code == 200
+    bob_messages = [m for m in history.json()["messages"] if m["recipient_id"] == str(bob.id)]
+    assert len(bob_messages) == 1
+    assert bob_messages[0]["attachments"][0]["id"] == attachment["id"]
+
+    history_carol = await client.get(f"/api/v1/rooms/{room['id']}/messages", cookies=_cookies(carol))
+    carol_messages = [m for m in history_carol.json()["messages"] if m["recipient_id"] == str(carol.id)]
+    assert len(carol_messages) == 1
+    assert carol_messages[0]["attachments"][0]["id"] == attachment["id"]
+
+
+@pytest.mark.asyncio
+async def test_direct_text_only_message(client: AsyncClient, db_session: AsyncSession):
+    alice = await create_test_user(db_session, "alice_text_only")
+    bob = await create_test_user(db_session, "bob_text_only")
+    room_id = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+
+    sent = await client.post(
+        f"/api/v1/rooms/{room_id}/messages",
+        json={"ciphertext": "dGV4dC1vbmx5LWNpcGhlcnRleHQ", "nonce": "dGV4dC1vbmx5LW5vbmNl"},
+        cookies=_cookies(alice),
+    )
+    assert sent.status_code == 201
+    assert sent.json()["attachments"] == []
+
+
+@pytest.mark.asyncio
+async def test_direct_file_only_message(
+    client: AsyncClient, db_session: AsyncSession, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_DIR", str(tmp_path))
+    alice = await create_test_user(db_session, "alice_file_only")
+    bob = await create_test_user(db_session, "bob_file_only")
+    room_id = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+    encrypted_blob = b"file-only-encrypted-bytes"
+
+    upload = await client.post(
+        f"/api/v1/rooms/{room_id}/attachments",
+        files={"file": ("file.png.encrypted", encrypted_blob, "application/octet-stream")},
+        data={"filename": "file.png", "mime_type": "image/png", "size_bytes": str(len(encrypted_blob))},
+        cookies=_cookies(alice),
+    )
+    assert upload.status_code == 201
+    attachment = upload.json()
+
+    # File-only message: client still encrypts an empty-text envelope, so
+    # ciphertext is non-empty even though there is no user-visible text.
+    sent = await client.post(
+        f"/api/v1/rooms/{room_id}/messages",
+        json={
+            "ciphertext": "ZmlsZS1vbmx5LWVudmVsb3BlLWNpcGhlcnRleHQ",
+            "nonce": "ZmlsZS1vbmx5LW5vbmNl",
+            "attachment_ids": [attachment["id"]],
+        },
+        cookies=_cookies(alice),
+    )
+    assert sent.status_code == 201
+    assert sent.json()["attachments"][0]["id"] == attachment["id"]
+
+
+@pytest.mark.asyncio
+async def test_direct_text_and_attachment_persists_after_reload(
+    client: AsyncClient, db_session: AsyncSession, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_DIR", str(tmp_path))
+    alice = await create_test_user(db_session, "alice_text_file")
+    bob = await create_test_user(db_session, "bob_text_file")
+    room_id = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+    encrypted_blob = b"text-and-file-encrypted-bytes"
+
+    upload = await client.post(
+        f"/api/v1/rooms/{room_id}/attachments",
+        files={"file": ("note.png.encrypted", encrypted_blob, "application/octet-stream")},
+        data={"filename": "note.png", "mime_type": "image/png", "size_bytes": str(len(encrypted_blob))},
+        cookies=_cookies(alice),
+    )
+    assert upload.status_code == 201
+    attachment = upload.json()
+
+    sent = await client.post(
+        f"/api/v1/rooms/{room_id}/messages",
+        json={
+            "ciphertext": "dGV4dC1hbmQtZmlsZS1jaXBoZXJ0ZXh0",
+            "encrypted_header": "dGV4dC1hbmQtZmlsZS1oZWFkZXI",
+            "nonce": "dGV4dC1hbmQtZmlsZS1ub25jZQ",
+            "attachment_ids": [attachment["id"]],
+        },
+        cookies=_cookies(alice),
+    )
+    assert sent.status_code == 201
+    message_id = sent.json()["id"]
+    assert sent.json()["attachments"][0]["id"] == attachment["id"]
+
+    # Reload from the DB (not the in-request response) to make sure the
+    # link survives — this is the persistence path that previously broke.
+    history = await client.get(f"/api/v1/rooms/{room_id}/messages", cookies=_cookies(bob))
+    reloaded = next(m for m in history.json()["messages"] if m["id"] == message_id)
+    assert reloaded["attachments"][0]["id"] == attachment["id"]
+
+
+@pytest.mark.asyncio
+async def test_unrelated_user_cannot_download_attachment(
+    client: AsyncClient, db_session: AsyncSession, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "ATTACHMENT_STORAGE_DIR", str(tmp_path))
+    alice = await create_test_user(db_session, "alice_unrelated")
+    bob = await create_test_user(db_session, "bob_unrelated")
+    mallory = await create_test_user(db_session, "mallory_unrelated")
+    room_id = (
+        await client.post(
+            "/api/v1/rooms",
+            json={"type": "direct", "member_ids": [str(bob.id)]},
+            cookies=_cookies(alice),
+        )
+    ).json()["id"]
+    encrypted_blob = b"unrelated-user-test-bytes"
+
+    upload = await client.post(
+        f"/api/v1/rooms/{room_id}/attachments",
+        files={"file": ("secret.png.encrypted", encrypted_blob, "application/octet-stream")},
+        data={"filename": "secret.png", "mime_type": "image/png", "size_bytes": str(len(encrypted_blob))},
+        cookies=_cookies(alice),
+    )
+    assert upload.status_code == 201
+    attachment = upload.json()
+
+    denied = await client.get(attachment["url"], cookies=_cookies(mallory))
+    assert denied.status_code == 403

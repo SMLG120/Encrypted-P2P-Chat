@@ -6,6 +6,7 @@ from app.models.attachment import MessageAttachment
 from app.models.identity_key import IdentityKey
 from app.models.membership import Membership
 from app.models.message import Message
+from app.models.message_attachment_link import message_attachment_links
 from app.models.one_time_prekey import OneTimePrekey
 from app.models.room import Room
 from app.models.signed_prekey import SignedPrekey
@@ -22,4 +23,5 @@ __all__ = [
     "Room",
     "Membership",
     "Message",
+    "message_attachment_links",
 ]

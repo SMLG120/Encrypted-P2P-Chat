@@ -238,6 +238,21 @@ This is simple and preserves the ciphertext-only backend rule. It is less effici
 
 Future roadmap: add Sender Keys for efficient group encryption after the MVP is stable.
 
+## File Attachments
+
+Images (PNG, JPEG, WebP, GIF, up to 10 MB each) can be attached to any direct or group message, with or without accompanying text.
+
+**Sending:**
+
+1. Click the image icon next to the message box and pick one or more files (or remove a selected file with the `×` on its chip before sending).
+2. On send, the client encrypts each file locally with a random per-file key, uploads the encrypted blob to `POST /api/v1/rooms/{room_id}/attachments`, and gets back an opaque `attachment_id`.
+3. The file's per-file key and the `attachment_id` are embedded inside the same encrypted message envelope as the text (so an attachment-only message just has empty `text`). The server only ever sees ciphertext plus an `attachment_ids` list — never the file key.
+4. In a group chat, the file is uploaded **once** but the message envelope referencing it is encrypted separately for every recipient and sent as one row per recipient. The same `attachment_id` is linked to every one of those rows, so it survives a page reload for everyone, not just whoever's row got created first.
+
+**Receiving:** the message bubble decrypts the envelope, then fetches and decrypts the attachment blob using the embedded key to render an inline image preview with a download button.
+
+**Access control:** downloading an attachment (`GET /api/v1/attachments/{id}/blob`) requires being a member of the room the attachment belongs to; uploading/linking an attachment to a message requires being the original uploader. Unrelated users get a `403`.
+
 ## How to Test with Two Clients
 
 1. Start PostgreSQL and Redis.

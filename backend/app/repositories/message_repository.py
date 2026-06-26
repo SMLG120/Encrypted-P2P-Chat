@@ -172,8 +172,20 @@ class MessageRepository:
     async def attach_to_message(
         self, attachments: list[MessageAttachment], message_id: uuid.UUID
     ) -> None:
+        """Link attachments to a message row.
+
+        A single uploaded attachment can be linked to several message rows
+        (one per recipient in a group room), so this appends to the
+        many-to-many `attachments`/`messages` relationship rather than
+        setting a single foreign key.
+        """
+        if not attachments:
+            return
+        msg = await self.get_by_id(message_id)
         for attachment in attachments:
-            attachment.message_id = message_id
+            await self._db.refresh(attachment, attribute_names=["messages"])
+            if msg not in attachment.messages:
+                attachment.messages.append(msg)
         await self._db.flush()
 
     async def mark_delivered(self, message_id: uuid.UUID) -> None:

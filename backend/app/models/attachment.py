@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.models.message_attachment_link import message_attachment_links
 
 if TYPE_CHECKING:
     from app.models.message import Message
@@ -23,6 +24,13 @@ if TYPE_CHECKING:
 
 
 class MessageAttachment(Base):
+    """
+    A single uploaded encrypted blob. One attachment can be linked to
+    several message rows at once (e.g. one row per group-chat recipient),
+    via the `message_attachment_links` association table — see
+    `MessageAttachment.messages`.
+    """
+
     __tablename__ = "message_attachments"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -30,9 +38,6 @@ class MessageAttachment(Base):
     )
     room_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    message_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
     )
     uploader_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
@@ -48,5 +53,9 @@ class MessageAttachment(Base):
     )
 
     room: Mapped["Room"] = relationship("Room")
-    message: Mapped["Message | None"] = relationship("Message", back_populates="attachments")
     uploader: Mapped["User"] = relationship("User")
+    messages: Mapped[list["Message"]] = relationship(
+        "Message",
+        secondary=message_attachment_links,
+        back_populates="attachments",
+    )

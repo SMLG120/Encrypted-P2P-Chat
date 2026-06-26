@@ -47,7 +47,6 @@ class MessageService:
         return AttachmentResponse(
             id=attachment.id,
             room_id=attachment.room_id,
-            message_id=attachment.message_id,
             uploader_id=attachment.uploader_id,
             filename=attachment.filename,
             mime_type=attachment.mime_type,
@@ -115,13 +114,15 @@ class MessageService:
         attachments = await self._messages.get_attachments_by_ids(payload.attachment_ids)
         if len(attachments) != len(set(payload.attachment_ids)):
             raise AttachmentNotFoundError()
+        # A single uploaded attachment may be linked to more than one message
+        # row (e.g. one row per recipient in a group room), so re-sending the
+        # same attachment_id is allowed as long as it belongs to this room
+        # and was uploaded by the sender.
         for attachment in attachments:
             if attachment.room_id != room_id:
                 raise ForbiddenError("Attachment belongs to a different room")
             if attachment.uploader_id != sender_id:
                 raise ForbiddenError("You can only send attachments you uploaded")
-            if attachment.message_id is not None:
-                raise ForbiddenError("Attachment is already linked to a message")
 
         return recipient_id, attachments
 

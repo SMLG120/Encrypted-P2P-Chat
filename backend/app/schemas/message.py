@@ -57,7 +57,6 @@ class MessageForward(BaseModel):
 class AttachmentResponse(BaseModel):
     id: uuid.UUID
     room_id: uuid.UUID
-    message_id: uuid.UUID | None
     uploader_id: uuid.UUID
     filename: str
     mime_type: str

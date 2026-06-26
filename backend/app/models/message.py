@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.models.message_attachment_link import message_attachment_links
 
 if TYPE_CHECKING:
     from app.models.attachment import MessageAttachment
@@ -87,5 +88,8 @@ class Message(Base):
     )
     forwarded_from: Mapped["Message | None"] = relationship("Message", remote_side=[id])
     attachments: Mapped[list["MessageAttachment"]] = relationship(
-        "MessageAttachment", back_populates="message", lazy="selectin"
+        "MessageAttachment",
+        secondary=message_attachment_links,
+        back_populates="messages",
+        lazy="selectin",
     )
