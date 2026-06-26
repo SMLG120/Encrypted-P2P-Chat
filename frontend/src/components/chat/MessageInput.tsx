@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { ImagePlus, Loader2, Send, Lock, X } from "lucide-react";
 import { clsx } from "clsx";
 
@@ -60,17 +60,12 @@ export function MessageInput({ onSend, onTypingStart, onTypingStop, disabled, bu
       {files.length > 0 && (
         <div className="mb-3 flex flex-wrap gap-2 pl-8">
           {files.map((file) => (
-            <div key={`${file.name}:${file.size}`} className="flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1 text-xs text-text-secondary">
-              <span className="max-w-40 truncate">{file.name}</span>
-              <button
-                type="button"
-                title="Remove attachment"
-                onClick={() => setFiles((current) => current.filter((item) => item !== file))}
-                className="text-text-muted hover:text-rose"
-              >
-                <X size={12} />
-              </button>
-            </div>
+            <FileChip
+              key={`${file.name}:${file.size}`}
+              file={file}
+              uploading={busy}
+              onRemove={() => setFiles((current) => current.filter((item) => item !== file))}
+            />
           ))}
         </div>
       )}
@@ -139,6 +134,46 @@ export function MessageInput({ onSend, onTypingStart, onTypingStop, disabled, bu
         {busy ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
       </button>
       </div>
+    </div>
+  );
+}
+
+function FileChip({
+  file,
+  uploading,
+  onRemove,
+}: {
+  file: File;
+  uploading?: boolean;
+  onRemove: () => void;
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!file.type.startsWith("image/")) return;
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  return (
+    <div className="relative flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1 text-xs text-text-secondary">
+      {previewUrl ? (
+        <img src={previewUrl} alt={file.name} className="h-6 w-6 rounded object-cover" />
+      ) : null}
+      <span className="max-w-40 truncate">{file.name}</span>
+      {uploading ? (
+        <Loader2 size={12} className="animate-spin text-cyan" />
+      ) : (
+        <button
+          type="button"
+          title="Remove attachment"
+          onClick={onRemove}
+          className="text-text-muted hover:text-rose"
+        >
+          <X size={12} />
+        </button>
+      )}
     </div>
   );
 }

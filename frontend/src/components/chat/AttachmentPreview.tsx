@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ImageIcon, Loader2 } from "lucide-react";
+import { Download, ImageIcon, Loader2 } from "lucide-react";
 
 import { decryptAttachmentBlob } from "@/lib/attachmentCrypto";
 import type { ClientAttachmentRef } from "@/lib/messageEnvelope";
@@ -71,8 +71,16 @@ export function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
         alt={attachment.filename}
         className="max-h-64 w-full object-contain"
       />
-      <figcaption className="border-t border-border px-2 py-1 text-xs text-text-muted">
-        {attachment.filename}
+      <figcaption className="flex items-center justify-between gap-2 border-t border-border px-2 py-1 text-xs text-text-muted">
+        <span className="truncate">{attachment.filename}</span>
+        <a
+          href={url}
+          download={attachment.filename}
+          title="Download attachment"
+          className="flex-shrink-0 text-text-muted hover:text-cyan"
+        >
+          <Download size={14} />
+        </a>
       </figcaption>
     </figure>
   );
